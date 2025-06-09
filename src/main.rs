@@ -197,7 +197,7 @@ async fn main() -> Result<()> {
                             println!("Generated {} file edits:", edits.len());
                             for edit in &edits {
                                 println!("  - {}", edit.path.display());
-                                println!("    {} text edits", edit.edits.len());
+                                println!("    Search/Replace edit: {} -> {}", edit.search.len(), edit.replace.len());
                             }
                             
                             if apply {
