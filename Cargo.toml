@@ -1,0 +1,79 @@
+[package]
+name = "arbiter"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A next-generation Rust code agent leveraging Aider's architecture with modern technologies"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/arbiter"
+keywords = ["ai", "code-agent", "tree-sitter", "lsp", "development"]
+categories = ["development-tools", "command-line-utilities"]
+
+[dependencies]
+# Async runtime and utilities
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Tree-sitter for code parsing
+tree-sitter = "0.20"
+tree-sitter-rust = "0.20"
+tree-sitter-python = "0.20"
+tree-sitter-javascript = "0.20"
+tree-sitter-typescript = "0.20"
+tree-sitter-go = "0.20"
+tree-sitter-java = "0.20"
+tree-sitter-c-sharp = "0.20"
+
+# LSP integration
+tower-lsp = "0.20"
+lsp-types = "0.94"
+
+# CLI utilities
+clap = { version = "4.4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File system and path utilities
+walkdir = "2.4"
+ignore = "0.4"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# String processing and fuzzy matching
+fuzzy-matcher = "0.3"
+regex = "1.10"
+
+# Configuration
+config = "0.14"
+toml = "0.8"
+
+# HTTP client for AI providers
+reqwest = { version = "0.11", features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3.8"
+assert_matches = "1.5"
+
+[lib]
+name = "arbiter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arbiter"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+debug = true
