@@ -1,6 +1,9 @@
 use arbiter::{CodeAgentBuilder, AiProvider, ContextRequest, Result, CodeAgent};
+use arbiter::ai_providers::AiProviderFactory;
 use async_trait::async_trait;
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -19,6 +22,46 @@ struct Cli {
     
     #[arg(short, long, global = true, default_value = "100000")]
     context_size: usize,
+
+    #[arg(short = 'C', long, global = true, default_value = "config.toml")]
+    config_file: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    ai_provider: AiProviderConfig,
+    context: Option<ContextConfig>,
+    repository: Option<RepositoryConfig>,
+    logging: Option<LoggingConfig>,
+}
+
+#[derive(Deserialize)]
+struct AiProviderConfig {
+    provider: String,
+    model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    custom: Option<HashMap<String, toml::Value>>,
+}
+
+#[derive(Deserialize)]
+struct ContextConfig {
+    total_tokens: Option<usize>,
+    repository_map_tokens: Option<usize>,
+    compression_threshold: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct RepositoryConfig {
+    include_patterns: Option<Vec<String>>,
+    exclude_patterns: Option<Vec<String>>,
+    max_file_size: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct LoggingConfig {
+    level: Option<String>,
+    file: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -115,24 +158,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn load_config(config_path: &PathBuf) -> Result<Config> {
+    let config_content = std::fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read config file {}: {}", config_path.display(), e))?;
+    
+    let config: Config = toml::from_str(&config_content)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    
+    Ok(config)
+}
+
+fn create_ai_provider_from_config(config: &AiProviderConfig) -> Result<Box<dyn AiProvider + Send + Sync>> {
+    let mut provider_config = HashMap::new();
+    
+    if let Some(ref model) = config.model {
+        provider_config.insert("model".to_string(), model.clone());
+    }
+    
+    if let Some(ref base_url) = config.base_url {
+        provider_config.insert("base_url".to_string(), base_url.clone());
+    }
+    
+    if let Some(ref api_key) = config.api_key {
+        provider_config.insert("api_key".to_string(), api_key.clone());
+    }
+    
+    AiProviderFactory::from_config(&config.provider, provider_config)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     
+    // Load configuration
+    let config = load_config(&cli.config_file)?;
+    
     // Initialize tracing
-    let log_level = if cli.verbose { "debug" } else { "info" };
+    let log_level = if cli.verbose { 
+        "debug" 
+    } else if let Some(ref logging) = config.logging {
+        logging.level.as_deref().unwrap_or("info")
+    } else { 
+        "info" 
+    };
     tracing_subscriber::fmt()
         .with_env_filter(log_level)
         .init();
 
     info!("Starting Arbiter v0.1.0");
+    info!("Using AI provider: {} at {}", 
+          config.ai_provider.provider, 
+          config.ai_provider.base_url.as_deref().unwrap_or("default"));
 
-    // Create AI provider (in real implementation, this would be configurable)
-    let ai_provider = Box::new(MockAiProvider::new("mock-model".to_string()));
+    // Create AI provider from configuration
+    let ai_provider = create_ai_provider_from_config(&config.ai_provider)?;
+    
+    // Get context size from config or CLI
+    let context_size = if let Some(ref context_config) = config.context {
+        context_config.total_tokens.unwrap_or(cli.context_size)
+    } else {
+        cli.context_size
+    };
     
     // Build the code agent
     let agent = CodeAgentBuilder::new()
-        .window_size(cli.context_size)
+        .window_size(context_size)
         .ai_provider(ai_provider)
         .build()
         .await?;

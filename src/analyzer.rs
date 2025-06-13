@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::{Language, Result};
 
 // Tree-sitter imports
-use tree_sitter::{Parser, Tree, Query, QueryCursor, Point};
+use tree_sitter::{Parser, Query, QueryCursor};
 
 #[derive(Debug, Clone)]
 pub struct QueryMatch {

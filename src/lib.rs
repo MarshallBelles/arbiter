@@ -126,26 +126,50 @@ impl RustCodeAgent {
     async fn build_prompt(&self, context: &ContextResponse) -> Result<String> {
         let mut prompt = String::new();
         
-        prompt.push_str("You are an expert code assistant. Analyze the following codebase context:\n\n");
-        prompt.push_str("Repository Map:\n");
+        prompt.push_str("You are an expert code assistant. Analyze the following codebase context and provide your response in plain markdown format.\n\n");
+        prompt.push_str("When providing code changes, use markdown code blocks with SEARCH/REPLACE sections like this:\n\n");
+        prompt.push_str("```rust\n");
+        prompt.push_str("<<<<<<< SEARCH\n");
+        prompt.push_str("old code here\n");
+        prompt.push_str("=======\n");
+        prompt.push_str("new code here\n");
+        prompt.push_str(">>>>>>> REPLACE\n");
+        prompt.push_str("```\n\n");
+        
+        prompt.push_str("## Repository Map\n\n");
         prompt.push_str(&context.repository_map);
         prompt.push('\n');
         
         if !context.relevant_files.is_empty() {
-            prompt.push_str("\nRelevant Files:\n");
+            prompt.push_str("\n## Relevant Files\n\n");
             for file in &context.relevant_files {
-                prompt.push_str(&format!("{}:\n{}\n\n", file.path.display(), file.content));
+                prompt.push_str(&format!("### {}\n\n", file.path.display()));
+                prompt.push_str("```");
+                match file.language {
+                    crate::types::Language::Rust => prompt.push_str("rust"),
+                    crate::types::Language::Python => prompt.push_str("python"),
+                    crate::types::Language::JavaScript => prompt.push_str("javascript"),
+                    crate::types::Language::TypeScript => prompt.push_str("typescript"),
+                    crate::types::Language::Go => prompt.push_str("go"),
+                    crate::types::Language::Java => prompt.push_str("java"),
+                    crate::types::Language::CSharp => prompt.push_str("csharp"),
+                    crate::types::Language::Other(_) => prompt.push_str("text"),
+                }
+                prompt.push('\n');
+                prompt.push_str(&file.content);
+                prompt.push_str("\n```\n\n");
             }
         }
         
         if !context.diagnostics.is_empty() {
-            prompt.push_str("\nDiagnostics:\n");
+            prompt.push_str("\n## Diagnostics\n\n");
             for diagnostic in &context.diagnostics {
-                prompt.push_str(&format!("{:?}: {}\n", diagnostic.severity, diagnostic.message));
+                prompt.push_str(&format!("- **{:?}**: {} ({})\n", diagnostic.severity, diagnostic.message, diagnostic.file.display()));
             }
+            prompt.push('\n');
         }
         
-        prompt.push_str("\nProvide code changes using SEARCH/REPLACE blocks.");
+        prompt.push_str("\nPlease analyze the context and provide your response in markdown format. Use SEARCH/REPLACE blocks within appropriate language code blocks for any code changes.");
         
         Ok(prompt)
     }
@@ -170,8 +194,8 @@ impl RustCodeAgent {
                     .trim()
                     .split_whitespace()
                     .find(|s| s.contains("."))
-                    .unwrap_or("")
-                    .to_string();
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
                 
                 i += 1;
                 let mut search_content = String::new();

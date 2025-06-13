@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::sync::Arc;
 
-use crate::{Language, FileInfo, SymbolInfo, SymbolKind, TextRange, Position, RelevanceGraph, Result};
+use crate::{Language, FileInfo, SymbolInfo, RelevanceGraph, Result};
 use crate::analyzer::CodeAnalyzer;
 
 #[derive(Debug, Clone)]
@@ -222,7 +222,7 @@ impl RepositoryMapper {
         }
     }
 
-    async fn extract_basic_info(&self, content: &str, language: &Language) -> (Vec<String>, Vec<String>) {
+    async fn extract_basic_info(&self, _content: &str, _language: &Language) -> (Vec<String>, Vec<String>) {
         // Basic symbol and import extraction
         (Vec::new(), Vec::new())
     }

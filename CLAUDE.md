@@ -11,6 +11,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cargo run -- analyze "query" --files src/main.rs` - Analyze code context
 - `cargo run -- generate "request" --files src/lib.rs --apply` - Generate and apply changes
 - `cargo run -- interactive` - Start interactive mode
+- `cargo run -- --config-file custom.toml` - Use custom configuration file
+
+## Configuration
+
+The application uses a TOML configuration file (default: `config.toml`) to configure AI providers and other settings:
+
+- AI Provider: Configured to use custom endpoint at `http://arbiter3:8080`
+- Model supports plain markdown output with proper code block formatting
+- Context window and repository mapping settings are configurable
+- Supports multiple AI provider types (OpenAI, Anthropic, Ollama, Custom)
 
 ## Architecture Overview
 

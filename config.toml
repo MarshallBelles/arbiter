@@ -1,0 +1,38 @@
+# Arbiter Configuration
+
+[ai_provider]
+# Provider type: "openai", "anthropic", "ollama", or "custom"
+provider = "custom"
+
+# Model configuration
+model = "default"
+base_url = "http://arbiter3:8080"
+
+# Custom provider settings for plain text/markdown output
+[ai_provider.custom]
+endpoint = "/v1/chat/completions"
+api_key_required = false
+supports_streaming = true
+max_tokens = 4096
+temperature = 0.1
+
+# Context window configuration
+[context]
+total_tokens = 100000
+repository_map_tokens = 1024
+compression_threshold = 1000
+
+# Repository scanning settings
+[repository]
+include_patterns = ["**/*.rs", "**/*.py", "**/*.js", "**/*.ts", "**/*.go", "**/*.java", "**/*.cs"]
+exclude_patterns = ["target/**", "node_modules/**", ".git/**", "*.lock"]
+max_file_size = 1048576  # 1MB
+
+# Logging configuration
+[logging]
+level = "info"
+file = "arbiter.log"
+
+# Plugin settings
+[plugins]
+enabled = []

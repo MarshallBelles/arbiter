@@ -46,7 +46,7 @@ impl OpenAiProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
-                .expect("Failed to create HTTP client"),
+                .unwrap_or_else(|_| Client::new()),
             api_key,
             model: model.unwrap_or_else(|| "gpt-4".to_string()),
             base_url: "https://api.openai.com/v1".to_string(),
@@ -150,7 +150,7 @@ impl AnthropicProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
-                .expect("Failed to create HTTP client"),
+                .unwrap_or_else(|_| Client::new()),
             api_key,
             model: model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string()),
         }
@@ -239,7 +239,7 @@ impl OllamaProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(300)) // Longer timeout for local models
                 .build()
-                .expect("Failed to create HTTP client"),
+                .unwrap_or_else(|_| Client::new()),
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
             model,
         }
@@ -295,6 +295,120 @@ impl AiProvider for OllamaProvider {
     }
 }
 
+// ==================== Custom/Generic Provider ====================
+
+pub struct CustomProvider {
+    client: Client,
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CustomRequest {
+    model: String,
+    messages: Vec<CustomMessage>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    stream: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CustomMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct CustomResponse {
+    choices: Vec<CustomChoice>,
+}
+
+#[derive(Deserialize)]
+struct CustomChoice {
+    message: CustomMessage,
+}
+
+impl CustomProvider {
+    pub fn new(base_url: String, model: String, api_key: Option<String>) -> Self {
+        Self {
+            client: Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
+            base_url,
+            model,
+            api_key,
+        }
+    }
+}
+
+#[async_trait]
+impl AiProvider for CustomProvider {
+    async fn generate(&self, prompt: &str) -> Result<String> {
+        // Format prompt to encourage markdown code blocks
+        let formatted_prompt = format!(
+            "Please provide your response as plain markdown. When writing code, use markdown code blocks with appropriate language tags (```rust, ```python, etc.). Here's the request:\n\n{}",
+            prompt
+        );
+
+        let request = CustomRequest {
+            model: self.model.clone(),
+            messages: vec![CustomMessage {
+                role: "user".to_string(),
+                content: formatted_prompt,
+            }],
+            max_tokens: Some(4096),
+            temperature: Some(0.1),
+            stream: Some(false),
+        };
+
+        let mut request_builder = self.client
+            .post(&format!("{}/v1/chat/completions", self.base_url))
+            .header("Content-Type", "application/json");
+
+        if let Some(ref api_key) = self.api_key {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request_builder
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("Custom provider request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(format!("Custom provider error ({}): {}", status, error_text).into());
+        }
+
+        let custom_response: CustomResponse = response.json().await
+            .map_err(|e| format!("Failed to parse custom provider response: {}", e))?;
+
+        custom_response.choices
+            .first()
+            .map(|choice| choice.message.content.clone())
+            .ok_or_else(|| "No response from custom provider".into())
+    }
+
+    async fn stream_generate(&self, prompt: &str) -> Result<mpsc::Receiver<String>> {
+        let (tx, rx) = mpsc::channel(100);
+        
+        // For simplicity, just send the non-streaming response word by word
+        let response = self.generate(prompt).await?;
+        
+        tokio::spawn(async move {
+            for word in response.split_whitespace() {
+                let _ = tx.send(word.to_string()).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+
+        Ok(rx)
+    }
+}
+
 // ==================== Provider Factory ====================
 
 pub struct AiProviderFactory;
@@ -310,6 +424,10 @@ impl AiProviderFactory {
     
     pub fn create_ollama(model: String, base_url: Option<String>) -> Box<dyn AiProvider + Send + Sync> {
         Box::new(OllamaProvider::new(model, base_url))
+    }
+
+    pub fn create_custom(base_url: String, model: String, api_key: Option<String>) -> Box<dyn AiProvider + Send + Sync> {
+        Box::new(CustomProvider::new(base_url, model, api_key))
     }
     
     pub fn from_config(provider: &str, config: HashMap<String, String>) -> Result<Box<dyn AiProvider + Send + Sync>> {
@@ -334,6 +452,16 @@ impl AiProviderFactory {
                     .clone();
                 let base_url = config.get("base_url").cloned();
                 Ok(Self::create_ollama(model, base_url))
+            },
+            "custom" => {
+                let base_url = config.get("base_url")
+                    .ok_or("Base URL required for custom provider")?
+                    .clone();
+                let model = config.get("model")
+                    .unwrap_or(&"default".to_string())
+                    .clone();
+                let api_key = config.get("api_key").cloned();
+                Ok(Self::create_custom(base_url, model, api_key))
             },
             _ => Err(format!("Unknown AI provider: {}", provider).into()),
         }
