@@ -79,6 +79,8 @@ Always be helpful, professional, and focused on empowering the user's developmen
         let mut tool_executor = self.tool_executor.clone();
         
         let mut stream = ai_client.chat_stream(prompt).await?;
+        let mut thinking_buffer = String::new(); // Buffer for thinking content cleanup
+        let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
         
         while let Some(event) = stream.recv().await {
             match event {
@@ -90,15 +92,46 @@ Always be helpful, professional, and focused on empowering the user's developmen
                     println!("\n{}", thinking);
                 }
                 StreamEvent::ThinkStart => {
+                    thinking_buffer.clear();
+                    thinking_display_buffer.clear();
                     print!("\n");
                     io::Write::flush(&mut io::stdout())?;
                 }
                 StreamEvent::ThinkPartial(partial) => {
-                    print!("{}", partial);
-                    io::Write::flush(&mut io::stdout())?;
+                    // Add to both buffers
+                    thinking_buffer.push_str(&partial);
+                    thinking_display_buffer.push_str(&partial);
+                    
+                    // Lookahead buffer approach: only flush content we're confident is safe
+                    const LOOKAHEAD_SIZE: usize = 20;
+                    if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
+                        // Check if the early part contains tag beginnings
+                        let safe_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
+                        let safe_content = &thinking_display_buffer[..safe_len];
+                        
+                        // Only flush if no tag markers in the safe content
+                        if !safe_content.contains('<') || 
+                           (safe_content.rfind('<').map_or(true, |pos| {
+                               safe_content[pos..].contains('>') // Complete tag in safe content
+                           })) {
+                            print!("{}", safe_content);
+                            io::Write::flush(&mut io::stdout())?;
+                            thinking_display_buffer.drain(..safe_len);
+                        }
+                    }
                 }
                 StreamEvent::ThinkEnd => {
+                    // With lookahead buffer, clean up remaining content
+                    if !thinking_display_buffer.is_empty() {
+                        // Remove any closing tag and flush remaining safe content
+                        let clean_content = thinking_display_buffer.replace("</think>", "");
+                        if !clean_content.is_empty() {
+                            print!("{}", clean_content);
+                        }
+                    }
                     print!("\n");
+                    thinking_buffer.clear();
+                    thinking_display_buffer.clear();
                     io::Write::flush(&mut io::stdout())?;
                 }
                 StreamEvent::ToolCall(tool_call) => {
@@ -115,39 +148,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
                         Ok(result) => {
                             println!("Tool result: {}", result);
                             ai_client.add_tool_result(&tool_call.name, &result);
-                            
-                            // Continue the conversation with the tool result
-                            let mut continue_stream = ai_client.chat_stream("").await?;
-                            while let Some(continue_event) = continue_stream.recv().await {
-                                match continue_event {
-                                    StreamEvent::Text(text) => {
-                                        print!("{}", text);
-                                        io::Write::flush(&mut io::stdout())?;
-                                    }
-                                    StreamEvent::Think(thinking) => {
-                                        println!("\n{}", thinking);
-                                    }
-                                    StreamEvent::ThinkStart => {
-                                        print!("\n\x1b[2;37m");
-                                        io::Write::flush(&mut io::stdout())?;
-                                    }
-                                    StreamEvent::ThinkPartial(partial) => {
-                                        print!("\x1b[2;37m{}", partial);
-                                        io::Write::flush(&mut io::stdout())?;
-                                    }
-                                    StreamEvent::ThinkEnd => {
-                                        print!("\x1b[0m\n");
-                                        io::Write::flush(&mut io::stdout())?;
-                                    }
-                                    StreamEvent::ToolCall(tool_call) => {
-                                        println!("\n[Executing: {} with args: {}]", tool_call.name, tool_call.args);
-                                    }
-                                    StreamEvent::Error(error) => {
-                                        println!("\nError: {}", error);
-                                    }
-                                    StreamEvent::Done => break,
-                                }
-                            }
+                            // Tool execution complete
                         }
                         Err(e) => {
                             println!("Tool execution failed: {}", e);
@@ -255,6 +256,10 @@ Always be helpful, professional, and focused on empowering the user's developmen
             
             match self.tool_executor.execute_tool("shell_command", &args).await {
                 Ok(result) => {
+                    // Add the shell command and result to AI conversation context
+                    self.ai_client.add_user_message(&format!("$ {}", input));
+                    self.ai_client.add_tool_result("shell_command", &result);
+                    
                     // Clean the result and print directly
                     let cleaned_result = Self::strip_ansi_codes(&result);
                     // Remove the "Command executed successfully:" prefix
@@ -266,17 +271,26 @@ Always be helpful, professional, and focused on empowering the user's developmen
                     io::stdout().flush()?;
                 }
                 Err(e) => {
+                    // Add failed command to AI conversation context
+                    self.ai_client.add_user_message(&format!("$ {}", input));
+                    self.ai_client.add_tool_result("shell_command", &format!("Command failed: {}", e));
+                    
                     eprintln!("\x1b[1;31mShell command failed:\x1b[0m {}", e);
                 }
             }
         } else {
             // Process with AI
             let mut stream = self.ai_client.chat_stream(input).await?;
+            let mut ai_response = String::new(); // Accumulate AI response (excluding thinking)
+            let mut thinking_buffer = String::new(); // Buffer for cleaning thinking content
+            let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
+            let mut in_thinking = false;
             
             while let Some(event) = stream.recv().await {
                 match event {
                     crate::ai::StreamEvent::Text(text) => {
                         print!("{}", text);
+                        ai_response.push_str(&text); // Accumulate for conversation history
                         io::stdout().flush()?;
                     }
                     crate::ai::StreamEvent::Think(thinking) => {
@@ -285,14 +299,48 @@ Always be helpful, professional, and focused on empowering the user's developmen
                     }
                     crate::ai::StreamEvent::ThinkStart => {
                         print!("\n\x1b[2;37m");
+                        thinking_buffer.clear();
+                        thinking_display_buffer.clear();
+                        in_thinking = true;
                         io::stdout().flush()?;
                     }
                     crate::ai::StreamEvent::ThinkPartial(partial) => {
-                        print!("\x1b[2;37m{}", partial);
-                        io::stdout().flush()?;
+                        // Add to both buffers
+                        thinking_buffer.push_str(&partial);
+                        thinking_display_buffer.push_str(&partial);
+                        
+                        // Lookahead buffer approach: only flush content we're confident is safe
+                        const LOOKAHEAD_SIZE: usize = 20;
+                        if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
+                            // Check if the early part contains tag beginnings
+                            let safe_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
+                            let safe_content = &thinking_display_buffer[..safe_len];
+                            
+                            // Only flush if no tag markers in the safe content
+                            if !safe_content.contains('<') || 
+                               (safe_content.rfind('<').map_or(true, |pos| {
+                                   safe_content[pos..].contains('>') // Complete tag in safe content
+                               })) {
+                                print!("\x1b[2;37m{}", safe_content);
+                                io::stdout().flush()?;
+                                thinking_display_buffer.drain(..safe_len);
+                            }
+                        }
                     }
                     crate::ai::StreamEvent::ThinkEnd => {
+                        // With lookahead buffer, clean up remaining content
+                        if !thinking_display_buffer.is_empty() {
+                            // Remove any closing tag and flush remaining safe content
+                            let clean_content = thinking_display_buffer.replace("</think>", "");
+                            if !clean_content.is_empty() {
+                                print!("\x1b[2;37m{}", clean_content);
+                            }
+                        }
+                        // End thinking mode and reset formatting
                         print!("\x1b[0m\n");
+                        thinking_buffer.clear();
+                        thinking_display_buffer.clear();
+                        in_thinking = false;
                         io::stdout().flush()?;
                     }
                     crate::ai::StreamEvent::ToolCall(tool_call) => {
@@ -307,40 +355,8 @@ Always be helpful, professional, and focused on empowering the user's developmen
                                 self.display_tool_output(&cleaned_result);
                                 self.ai_client.add_tool_result(&tool_call.name, &result);
                                 
-                                // Continue the conversation with the tool result
-                                let mut continue_stream = self.ai_client.chat_stream("").await?;
-                                while let Some(continue_event) = continue_stream.recv().await {
-                                    match continue_event {
-                                        crate::ai::StreamEvent::Text(text) => {
-                                            print!("{}", text);
-                                            io::stdout().flush()?;
-                                        }
-                                        crate::ai::StreamEvent::Think(thinking) => {
-                                            println!("\n\x1b[2;37m{}\x1b[0m", thinking);
-                                            io::stdout().flush()?;
-                                        }
-                                        crate::ai::StreamEvent::ThinkStart => {
-                                            print!("\n\x1b[2;37m");
-                                            io::stdout().flush()?;
-                                        }
-                                        crate::ai::StreamEvent::ThinkPartial(partial) => {
-                                            print!("\x1b[2;37m{}", partial);
-                                            io::stdout().flush()?;
-                                        }
-                                        crate::ai::StreamEvent::ThinkEnd => {
-                                            print!("\x1b[0m\n");
-                                            io::stdout().flush()?;
-                                        }
-                                        crate::ai::StreamEvent::ToolCall(tool_call) => {
-                                            // Handle nested tool calls if needed
-                                            println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90mwith args:\x1b[0m \x1b[37m{}\x1b[0m", tool_call.name, tool_call.args);
-                                        }
-                                        crate::ai::StreamEvent::Done => break,
-                                        crate::ai::StreamEvent::Error(error) => {
-                                            eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
-                                        }
-                                    }
-                                }
+                                // Tool executed successfully - no automatic continuation
+                                // The AI will naturally continue if more processing is needed via the next user input
                             }
                             Err(e) => {
                                 eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
@@ -351,6 +367,10 @@ Always be helpful, professional, and focused on empowering the user's developmen
                         eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
                     }
                     crate::ai::StreamEvent::Done => {
+                        // Add AI response to conversation history (excluding thinking)
+                        if !ai_response.trim().is_empty() {
+                            self.ai_client.add_assistant_message(&ai_response);
+                        }
                         break;
                     }
                 }
@@ -931,10 +951,18 @@ impl ShellApp {
             
             match self.tool_executor.execute_tool("shell_command", &args).await {
                 Ok(result) => {
+                    // Add the shell command and result to AI conversation context
+                    self.ai_client.add_user_message(&format!("$ {}", input));
+                    self.ai_client.add_tool_result("shell_command", &result);
+                    
                     self.messages.push(DisplayMessage::ToolResult("shell".to_string(), result));
                     self.scroll_to_bottom();
                 }
                 Err(e) => {
+                    // Add failed command to AI conversation context
+                    self.ai_client.add_user_message(&format!("$ {}", input));
+                    self.ai_client.add_tool_result("shell_command", &format!("Command failed: {}", e));
+                    
                     self.messages.push(DisplayMessage::Error(format!("Shell command failed: {}", e)));
                     self.scroll_to_bottom();
                 }
@@ -982,39 +1010,7 @@ impl ShellApp {
                                         self.scroll_to_bottom();
                                         self.ai_client.add_tool_result(&tool_call.name, &result);
                                         
-                                        // Continue with AI response after tool execution
-                                        if let Ok(mut continue_stream) = self.ai_client.chat_stream("").await {
-                                            while let Some(continue_event) = continue_stream.recv().await {
-                                                match continue_event {
-                                                    StreamEvent::Text(text) => {
-                                                        self.current_response.push_str(&text);
-                                                    }
-                                                    StreamEvent::Think(thinking) => {
-                                                        self.messages.push(DisplayMessage::Thinking(thinking));
-                                                    }
-                                                    StreamEvent::ThinkStart => {
-                                                        // Start of thinking block - for TUI mode
-                                                    }
-                                                    StreamEvent::ThinkPartial(_partial) => {
-                                                        // For TUI mode - could accumulate or display later
-                                                    }
-                                                    StreamEvent::ThinkEnd => {
-                                                        // End of thinking block - for TUI mode
-                                                    }
-                                                    StreamEvent::ToolCall(nested_tool_call) => {
-                                                        // Handle nested tool calls if needed
-                                                        self.messages.push(DisplayMessage::ToolCall(
-                                                            nested_tool_call.name.clone(),
-                                                            nested_tool_call.args.clone()
-                                                        ));
-                                                    }
-                                                    StreamEvent::Error(error) => {
-                                                        self.messages.push(DisplayMessage::Error(error));
-                                                    }
-                                                    StreamEvent::Done => break,
-                                                }
-                                            }
-                                        }
+                                        // Tool executed successfully - ready for next user input
                                     }
                                     Err(e) => {
                                         self.messages.push(DisplayMessage::Error(

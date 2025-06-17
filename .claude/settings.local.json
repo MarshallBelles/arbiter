@@ -3,7 +3,8 @@
     "allow": [
       "Bash(cargo check:*)",
       "Bash(cargo build:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }

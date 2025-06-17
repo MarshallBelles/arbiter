@@ -193,6 +193,11 @@ I'll list the files in the current directory for you.
                                     Ok(response) => {
                                         buffer.push_str(&response.message.content);
                                         
+                                        // Debug: log the raw content we're receiving
+                                        if !response.message.content.trim().is_empty() {
+                                            debug!("Raw AI content: {:?}", response.message.content);
+                                        }
+                                        
                                         // Process the new chunk for XML parsing  
                                         let events = xml_parser.process_chunk(&response.message.content);
                                         for event in events {
@@ -454,36 +459,9 @@ impl XmlStreamParser {
                         self.buffer.clear();
                         self.state = ParserState::Text;
                         self.current_content.clear();
-                    } else {
-                        // Stream thinking content as it arrives, but filter out potential closing tag characters
-                        let should_emit = if ch == '<' {
-                            // Don't emit '<' if it might be the start of closing tag
-                            false
-                        } else if self.buffer.len() >= 2 && self.buffer.ends_with("</") {
-                            // Don't emit if we're building "</..."
-                            false
-                        } else if self.buffer.len() >= 3 && self.buffer.ends_with("</t") {
-                            // Don't emit if we're building "</t..."
-                            false
-                        } else if self.buffer.len() >= 4 && self.buffer.ends_with("</th") {
-                            // Don't emit if we're building "</th..."
-                            false
-                        } else if self.buffer.len() >= 5 && self.buffer.ends_with("</thi") {
-                            // Don't emit if we're building "</thi..."
-                            false
-                        } else if self.buffer.len() >= 6 && self.buffer.ends_with("</thin") {
-                            // Don't emit if we're building "</thin..."
-                            false
-                        } else if self.buffer.len() >= 7 && self.buffer.ends_with("</think") {
-                            // Don't emit if we're building "</think..."
-                            false
-                        } else {
-                            true
-                        };
-                        
-                        if should_emit && ch != '\r' {
-                            events.push(StreamEvent::ThinkPartial(ch.to_string()));
-                        }
+                    } else if ch != '\r' { // Skip carriage returns
+                        // Always emit thinking content - we'll clean up at ThinkEnd
+                        events.push(StreamEvent::ThinkPartial(ch.to_string()));
                     }
                 }
                 
@@ -529,15 +507,17 @@ impl XmlStreamParser {
         // Emit any remaining content based on current state
         match &self.state {
             ParserState::InThink => {
-                if !self.buffer.trim().is_empty() {
-                    events.push(StreamEvent::Think(self.buffer.trim().to_string()));
-                }
+                // If we're still in thinking, force close it
+                events.push(StreamEvent::ThinkEnd);
+                // Don't emit additional Think event - content was already streamed
+                // via ThinkPartial events during processing
             }
-            ParserState::InToolCall(tool_name) => {
-                events.push(StreamEvent::ToolCall(ToolCall {
-                    name: tool_name.clone(),
-                    args: self.buffer.clone(),
-                }));
+            ParserState::InToolCall(_tool_name) => {
+                // Incomplete tool call - treat remaining content as text
+                // Only emit complete tool calls during normal processing
+                if !self.buffer.is_empty() {
+                    events.push(StreamEvent::Text(self.buffer.clone()));
+                }
             }
             ParserState::LookingForTag => {
                 // Incomplete tag, treat as text
