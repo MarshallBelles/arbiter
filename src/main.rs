@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     match (cli.prompt, io::stdin().is_terminal()) {
         // Direct prompt provided
         (Some(prompt), _) => {
-            let shell = Shell::new(config).await?;
+            let mut shell = Shell::new(config).await?;
             shell.process_prompt(&prompt).await?;
         }
         
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
         (None, false) => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
-            let shell = Shell::new(config).await?;
+            let mut shell = Shell::new(config).await?;
             shell.process_prompt(&input.trim()).await?;
         }
         

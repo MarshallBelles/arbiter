@@ -33,14 +33,20 @@ ollama list
 
 **Running the Application:**
 ```bash
-# Interactive mode
+# Interactive mode (terminal shell)
 cargo run
 
 # Direct prompt
 cargo run -- "List files in current directory"
 
+# Pipe input
+echo "debug this error" | cargo run
+
 # With configuration override
 cargo run -- -m different-model -s http://localhost:11434 "prompt"
+
+# Install binary
+cargo install --path .
 ```
 
 ## Architecture Overview
@@ -48,36 +54,44 @@ cargo run -- -m different-model -s http://localhost:11434 "prompt"
 Arbiter is an AI-powered terminal application with a modular architecture centered around XML-based streaming responses and tool execution:
 
 **Core Data Flow:**
-1. **Input Processing** (`main.rs`): CLI parsing, configuration loading, and routing to appropriate execution mode
-2. **AI Communication** (`ai.rs`): Streaming HTTP client that parses XML responses in real-time, extracting `<think>` tags and `<tool_call>` elements
-3. **Tool Execution** (`tools.rs`): Handles shell commands, file operations, git commands, and code analysis
-4. **Interactive Interface** (`shell.rs`): TUI built with Ratatui that displays streaming responses with expandable sections
+1. **Input Processing** (`main.rs`): CLI parsing, configuration loading, and routing to appropriate execution mode (interactive shell, direct prompt, or pipe input)
+2. **AI Communication** (`ai.rs`): Streaming HTTP client with XML parser that processes real-time responses, extracting `<think>` tags and `<tool_call>` elements
+3. **Tool Execution** (`tools.rs`): Enhanced tool system handling shell commands, file operations, git commands, and code analysis with interactive command detection
+4. **Interactive Interface** (`shell.rs`): Professional console-based interface using Ratatui with mouse support, text selection, and streaming response display
 
 **Key Architectural Patterns:**
 
 **XML Streaming Parser:**
-The `XmlStreamParser` in `ai.rs` processes partial XML chunks in real-time, handling incomplete tags and maintaining state across streaming responses. It emits `StreamEvent` variants for different content types.
+The streaming parser in `ai.rs` processes partial XML chunks in real-time, handling incomplete tags and maintaining state across streaming responses. It emits `StreamEvent` variants for different content types including thinking, tool calls, and regular text.
 
 **Agentic Loop:**
-When a tool is executed, its result is fed back into the conversation history, allowing the AI to continue processing and potentially call additional tools based on the results.
+Implements a sophisticated agentic loop where tool execution results are fed back into the conversation history, allowing the AI to continue processing and potentially call additional tools based on the results. The loop continues until no more tool calls are needed.
 
 **Multi-Modal Input:**
-- Interactive TUI mode with terminal controls
-- Direct CLI prompt mode  
+- Interactive console mode with professional terminal styling
+- Direct CLI prompt mode for one-off tasks
 - Unix pipe integration for stream processing
+- Mouse support for text selection and copy/paste
 
 **Language Integration:**
-- Tree-sitter parsers (`tree_sitter_support.rs`) - currently using basic text parsing, Tree-sitter dependencies temporarily removed due to linking issues
-- LSP client (`lsp.rs`) for language server communication (currently embedded but modular)
+- Tree-sitter parsers (`tree_sitter_support.rs`) - currently using basic text parsing with framework for full Tree-sitter integration
+- LSP client (`lsp.rs`) for language server communication (embedded but modular)
+- Support for Rust, JavaScript/TypeScript, Python, Java, C++, Go, C#, and Zig
 
 ## Configuration System
 
 Configuration follows a hierarchical override pattern:
-1. Default config in `config.rs`
-2. User config file at `~/.config/arbiter/config.toml` 
+1. Default config in `config.rs` with sensible defaults
+2. User config file at `~/.config/arbiter/config.toml` (auto-created)
 3. CLI arguments override both
+4. Special command `arbiter "edit config"` for direct configuration editing
 
-The config includes model settings, Ollama server URL, and LSP server definitions for each supported language.
+The config includes:
+- Model settings (arbiter1.0 by default)
+- Ollama server URL (http://localhost:11434)
+- Context size (31000 tokens) and temperature (0.7)
+- LSP server definitions for each supported language
+- Token limits and generation parameters
 
 ## XML Response Format
 
@@ -116,36 +130,48 @@ To restore Tree-sitter support:
 
 ## Tool System
 
-Tools are executed through the `ToolExecutor` which:
-- Maintains a working directory context
-- Executes commands asynchronously with proper error handling
+Tools are executed through the enhanced `ToolExecutor` which:
+- Maintains working directory context with proper path resolution
+- Executes commands asynchronously with comprehensive error handling
+- Detects and provides guidance for interactive/streaming commands
+- Uses system shell detection for optimal command execution
 - Returns formatted results that get fed back to the AI
 
 Available tools:
-- `shell_command`: Direct shell execution with output capture
-- `write_file`: File creation with directory creation
-- `read_file`: File reading with error handling
-- `git_command`: Git operations
-- `code_analysis`: Tree-sitter based code structure analysis
+- `shell_command`: Direct shell execution with enhanced command detection and interactive command guidance
+- `write_file`: File creation with automatic directory creation and path resolution
+- `read_file`: File reading with comprehensive error handling and encoding detection
+- `git_command`: Git operations with proper repository context
+- `code_analysis`: Code structure analysis using Tree-sitter integration
+
+**Interactive Command Detection:**
+The tool system automatically detects interactive/streaming commands (like `tail -f`, `watch`, `top`) and provides helpful alternatives and guidance for future releases.
 
 ## Model Integration
 
-The `Modelfile.arbiter1.0` defines the model configuration for Ollama. It includes:
+The `Modelfile.arbiter1.0` defines the comprehensive model configuration for Ollama:
 - Base model reference (MiMo GGUF file)
-- Chat template with proper formatting
-- System prompt that enforces XML structure
-- Model parameters (temperature, context size, etc.)
+- Optimized chat template with tool integration support
+- Comprehensive system prompt with XML structure enforcement
+- Detailed tool documentation and usage examples
+- Model parameters optimized for coding tasks (31000 context, 0.7 temperature)
+- GPU acceleration settings (num_gpu 99)
+- Penalty and prediction parameters for consistent output
 
-The model expects the `ARBITER10.gguf` file to be downloaded separately and placed in the project root before creating the Ollama model.
+The model expects the `ARBITER10.gguf` file (based on Xiaomi's MiMo-VL-7B-RL) to be downloaded separately and placed in the project root before creating the Ollama model.
 
-## TUI Implementation
+## Console Interface Implementation
 
 The terminal interface (`shell.rs`) uses Ratatui with:
-- Message history with different styling for user/AI/thinking/tool content
-- Expandable sections (Tab key toggles)
-- Proper Ctrl+C handling (once to interrupt, twice to exit)
-- Shell command passthrough detection
-- Real-time streaming response display
+- Professional console-based display with native terminal text selection
+- Message history with distinct styling for user/AI/thinking/tool content
+- Mouse support for text selection and copy/paste operations
+- Proper Ctrl+C handling (copy selected text, interrupt operations, or exit)
+- Smart command detection (shell commands vs AI requests)
+- Real-time streaming response display with live tool execution feedback
+- Interactive command guidance and alternatives
+- Professional ANSI colors for optimal readability
+- Natural command history navigation
 
 ## Error Handling
 

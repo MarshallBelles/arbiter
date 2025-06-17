@@ -4,7 +4,9 @@
       "Bash(cargo check:*)",
       "Bash(cargo build:*)",
       "Bash(chmod:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(cargo test:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }

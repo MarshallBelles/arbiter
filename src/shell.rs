@@ -13,7 +13,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::ai::{AiClient, StreamEvent, ToolCall};
 use crate::config::Config;
@@ -61,6 +61,12 @@ TECHNICAL CONTEXT:
 • You operate in an agentic loop, executing tools and providing feedback
 • Interactive/streaming commands are not yet supported but are coming in future releases
 
+TOOL EXECUTION PROTOCOL:
+• Execute only ONE tool per response - never batch multiple tool calls
+• Wait for tool results before making decisions about next steps
+• Analyze each tool's output carefully before proceeding
+• Use the agentic loop: think → execute → analyze result → think → execute next tool if needed
+
 Always be helpful, professional, and focused on empowering the user's development workflow. You are their intelligent terminal companion."
         );
         
@@ -71,100 +77,134 @@ Always be helpful, professional, and focused on empowering the user's developmen
         })
     }
     
-    pub async fn process_prompt(&self, prompt: &str) -> Result<()> {
+    pub async fn process_prompt(&mut self, prompt: &str) -> Result<()> {
         info!("Processing prompt: {}", prompt);
         
-        // For non-interactive mode, just print the response
-        let mut ai_client = self.ai_client.clone();
-        let mut tool_executor = self.tool_executor.clone();
+        // Implement agentic loop for non-interactive mode
+        let mut first_iteration = true;
         
-        let mut stream = ai_client.chat_stream(prompt).await?;
-        let mut thinking_buffer = String::new(); // Buffer for thinking content cleanup
-        let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
-        
-        while let Some(event) = stream.recv().await {
-            match event {
-                StreamEvent::Text(text) => {
-                    print!("{}", text);
-                    io::Write::flush(&mut io::stdout())?;
-                }
-                StreamEvent::Think(thinking) => {
-                    println!("\n{}", thinking);
-                }
-                StreamEvent::ThinkStart => {
-                    thinking_buffer.clear();
-                    thinking_display_buffer.clear();
-                    print!("\n");
-                    io::Write::flush(&mut io::stdout())?;
-                }
-                StreamEvent::ThinkPartial(partial) => {
-                    // Add to both buffers
-                    thinking_buffer.push_str(&partial);
-                    thinking_display_buffer.push_str(&partial);
-                    
-                    // Lookahead buffer approach: only flush content we're confident is safe
-                    const LOOKAHEAD_SIZE: usize = 20;
-                    if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
-                        // Check if the early part contains tag beginnings
-                        let safe_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
-                        let safe_content = &thinking_display_buffer[..safe_len];
+        loop {
+            let mut stream = if first_iteration {
+                first_iteration = false;
+                self.ai_client.chat_stream(prompt).await?
+            } else {
+                // Continue conversation after tool execution
+                self.ai_client.chat_stream("").await?
+            };
+            
+            let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
+            let mut ai_response = String::new(); // Accumulate AI response (excluding thinking and tool calls)
+            let mut tools_executed = false;
+            
+            while let Some(event) = stream.recv().await {
+                match event {
+                    StreamEvent::Text(text) => {
+                        print!("{}", text);
+                        ai_response.push_str(&text); // Accumulate for conversation history
+                        io::Write::flush(&mut io::stdout())?;
+                    }
+                    StreamEvent::Think(thinking) => {
+                        println!("\n\x1b[2;37m{}\x1b[0m", thinking);
+                    }
+                    StreamEvent::ThinkStart => {
+                        thinking_display_buffer.clear();
+                        print!("\n\x1b[2;37m");
+                        io::Write::flush(&mut io::stdout())?;
+                    }
+                    StreamEvent::ThinkPartial(partial) => {
+                        thinking_display_buffer.push_str(&partial);
                         
-                        // Only flush if no tag markers in the safe content
-                        if !safe_content.contains('<') || 
-                           (safe_content.rfind('<').map_or(true, |pos| {
-                               safe_content[pos..].contains('>') // Complete tag in safe content
-                           })) {
-                            print!("{}", safe_content);
-                            io::Write::flush(&mut io::stdout())?;
-                            thinking_display_buffer.drain(..safe_len);
+                        // Lookahead buffer approach: only flush content we're confident is safe
+                        const LOOKAHEAD_SIZE: usize = 20;
+                        if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
+                            // Find safe Unicode boundary for splitting
+                            let target_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
+                            let safe_len = thinking_display_buffer.char_indices()
+                                .map(|(i, _)| i)
+                                .take_while(|&i| i <= target_len)
+                                .last()
+                                .unwrap_or(0);
+                            
+                            if safe_len > 0 {
+                                let safe_content = &thinking_display_buffer[..safe_len];
+                                let lookahead_content = &thinking_display_buffer[safe_len..];
+                                
+                                // Only flush if safe content doesn't contain incomplete tags
+                                let is_safe = if safe_content.contains('<') {
+                                    safe_content.rfind('<').map_or(true, |pos| {
+                                        safe_content[pos..].contains('>') // Complete tag in safe content
+                                    })
+                                } else {
+                                    true // No < characters, safe to flush
+                                };
+                                
+                                // Also check lookahead for partial closing tags like "</thin"
+                                let no_partial_closing_tag = !lookahead_content.starts_with("</") || 
+                                    lookahead_content.contains(">");
+                                
+                                if is_safe && no_partial_closing_tag {
+                                    print!("\x1b[2;37m{}", safe_content);
+                                    io::Write::flush(&mut io::stdout())?;
+                                    thinking_display_buffer.drain(..safe_len);
+                                }
+                            }
                         }
                     }
-                }
-                StreamEvent::ThinkEnd => {
-                    // With lookahead buffer, clean up remaining content
-                    if !thinking_display_buffer.is_empty() {
-                        // Remove any closing tag and flush remaining safe content
-                        let clean_content = thinking_display_buffer.replace("</think>", "");
-                        if !clean_content.is_empty() {
-                            print!("{}", clean_content);
+                    StreamEvent::ThinkEnd => {
+                        // With lookahead buffer, clean up remaining content
+                        if !thinking_display_buffer.is_empty() {
+                            // Remove any closing tag and flush remaining safe content
+                            let clean_content = thinking_display_buffer.replace("</think>", "");
+                            if !clean_content.is_empty() {
+                                print!("\x1b[2;37m{}", clean_content);
+                            }
+                        }
+                        print!("\x1b[0m\n");
+                        thinking_display_buffer.clear();
+                        io::Write::flush(&mut io::stdout())?;
+                    }
+                    StreamEvent::ToolCall(tool_call) => {
+                        println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90mwith args:\x1b[0m \x1b[37m{}\x1b[0m", tool_call.name, tool_call.args);
+                        
+                        // Use proper tool argument preparation
+                        let args = self.prepare_tool_args(&tool_call);
+                        
+                        match self.tool_executor.execute_tool(&tool_call.name, &args).await {
+                            Ok(result) => {
+                                let cleaned_result = Self::strip_ansi_codes(&result);
+                                self.display_tool_output(&cleaned_result);
+                                self.ai_client.add_tool_result(&tool_call.name, &result);
+                                
+                                // Set flag to continue agentic loop
+                                tools_executed = true;
+                            }
+                            Err(e) => {
+                                eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
+                                self.ai_client.add_tool_result(&tool_call.name, &format!("Tool execution failed: {}", e));
+                            }
                         }
                     }
-                    print!("\n");
-                    thinking_buffer.clear();
-                    thinking_display_buffer.clear();
-                    io::Write::flush(&mut io::stdout())?;
-                }
-                StreamEvent::ToolCall(tool_call) => {
-                    println!("\n[Executing: {} with args: {}]", tool_call.name, tool_call.args);
-                    
-                    // Execute the tool
-                    let args = serde_json::json!({
-                        "command": tool_call.args,
-                        "path": tool_call.args,
-                        "content": tool_call.args
-                    });
-                    
-                    match tool_executor.execute_tool(&tool_call.name, &args).await {
-                        Ok(result) => {
-                            println!("Tool result: {}", result);
-                            ai_client.add_tool_result(&tool_call.name, &result);
-                            // Tool execution complete
-                        }
-                        Err(e) => {
-                            println!("Tool execution failed: {}", e);
-                        }
+                    StreamEvent::Error(error) => {
+                        eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
                     }
-                }
-                StreamEvent::Error(error) => {
-                    println!("\nError: {}", error);
-                }
-                StreamEvent::Done => {
-                    println!();
-                    break;
+                    StreamEvent::Done => {
+                        // Add AI response to conversation history (excluding thinking and tool calls)
+                        if !ai_response.trim().is_empty() {
+                            self.ai_client.add_assistant_message(&ai_response);
+                        }
+                        break;
+                    }
                 }
             }
+            
+            // Continue agentic loop if tools were executed
+            if !tools_executed {
+                break; // No tools executed, exit the loop
+            }
+            // If tools were executed, continue the loop to call AI again
         }
         
+        println!();
         Ok(())
     }
     
@@ -234,8 +274,11 @@ Always be helpful, professional, and focused on empowering the user's developmen
     async fn process_console_input(&mut self, input: &str) -> Result<()> {
         use std::io::{self, Write};
         
+        // Input validation and sanitization
+        let sanitized_input = self.sanitize_input(input)?;
+        
         // Handle special commands first
-        if input.trim().eq_ignore_ascii_case("edit config") {
+        if sanitized_input.trim().eq_ignore_ascii_case("edit config") {
             match crate::config::Config::edit_existing_config(None) {
                 Ok(()) => {
                     println!("\x1b[1;32mConfig editing completed\x1b[0m");
@@ -248,16 +291,16 @@ Always be helpful, professional, and focused on empowering the user's developmen
         }
         
         // Check if this is a shell command
-        if self.is_shell_command(input) {
+        if self.is_shell_command(&sanitized_input) {
             // Execute directly as shell command
             let args = serde_json::json!({
-                "command": input
+                "command": sanitized_input
             });
             
             match self.tool_executor.execute_tool("shell_command", &args).await {
                 Ok(result) => {
                     // Add the shell command and result to AI conversation context
-                    self.ai_client.add_user_message(&format!("$ {}", input));
+                    self.ai_client.add_user_message(&format!("$ {}", sanitized_input));
                     self.ai_client.add_tool_result("shell_command", &result);
                     
                     // Clean the result and print directly
@@ -272,108 +315,149 @@ Always be helpful, professional, and focused on empowering the user's developmen
                 }
                 Err(e) => {
                     // Add failed command to AI conversation context
-                    self.ai_client.add_user_message(&format!("$ {}", input));
+                    self.ai_client.add_user_message(&format!("$ {}", sanitized_input));
                     self.ai_client.add_tool_result("shell_command", &format!("Command failed: {}", e));
                     
                     eprintln!("\x1b[1;31mShell command failed:\x1b[0m {}", e);
                 }
             }
         } else {
-            // Process with AI
-            let mut stream = self.ai_client.chat_stream(input).await?;
-            let mut ai_response = String::new(); // Accumulate AI response (excluding thinking)
-            let mut thinking_buffer = String::new(); // Buffer for cleaning thinking content
-            let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
-            let mut in_thinking = false;
+            // Process with AI - agentic loop for tool chaining
+            let mut first_iteration = true;
             
-            while let Some(event) = stream.recv().await {
-                match event {
-                    crate::ai::StreamEvent::Text(text) => {
-                        print!("{}", text);
-                        ai_response.push_str(&text); // Accumulate for conversation history
-                        io::stdout().flush()?;
-                    }
-                    crate::ai::StreamEvent::Think(thinking) => {
-                        println!("\n\x1b[2;37m{}\x1b[0m", thinking);
-                        io::stdout().flush()?;
-                    }
-                    crate::ai::StreamEvent::ThinkStart => {
-                        print!("\n\x1b[2;37m");
-                        thinking_buffer.clear();
-                        thinking_display_buffer.clear();
-                        in_thinking = true;
-                        io::stdout().flush()?;
-                    }
-                    crate::ai::StreamEvent::ThinkPartial(partial) => {
-                        // Add to both buffers
-                        thinking_buffer.push_str(&partial);
-                        thinking_display_buffer.push_str(&partial);
-                        
-                        // Lookahead buffer approach: only flush content we're confident is safe
-                        const LOOKAHEAD_SIZE: usize = 20;
-                        if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
-                            // Check if the early part contains tag beginnings
-                            let safe_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
-                            let safe_content = &thinking_display_buffer[..safe_len];
+            loop {
+                let mut stream = if first_iteration {
+                    first_iteration = false;
+                    self.ai_client.chat_stream(&sanitized_input).await?
+                } else {
+                    // Continue conversation after tool execution
+                    self.ai_client.chat_stream("").await?
+                };
+                
+                let mut ai_response = String::new(); // Accumulate AI response (excluding thinking)
+                let mut thinking_buffer = String::new(); // Buffer for cleaning thinking content
+                let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
+                let mut in_thinking = false;
+                let mut tools_executed = false;
+            
+                while let Some(event) = stream.recv().await {
+                    match event {
+                        crate::ai::StreamEvent::Text(text) => {
+                            print!("{}", text);
+                            ai_response.push_str(&text); // Accumulate for conversation history
+                            io::stdout().flush()?;
+                        }
+                        crate::ai::StreamEvent::Think(thinking) => {
+                            println!("\n\x1b[2;37m{}\x1b[0m", thinking);
+                            io::stdout().flush()?;
+                        }
+                        crate::ai::StreamEvent::ThinkStart => {
+                            print!("\n\x1b[2;37m");
+                            thinking_buffer.clear();
+                            thinking_display_buffer.clear();
+                            in_thinking = true;
+                            io::stdout().flush()?;
+                        }
+                        crate::ai::StreamEvent::ThinkPartial(partial) => {
+                            // Add to both buffers
+                            thinking_buffer.push_str(&partial);
+                            thinking_display_buffer.push_str(&partial);
                             
-                            // Only flush if no tag markers in the safe content
-                            if !safe_content.contains('<') || 
-                               (safe_content.rfind('<').map_or(true, |pos| {
-                                   safe_content[pos..].contains('>') // Complete tag in safe content
-                               })) {
-                                print!("\x1b[2;37m{}", safe_content);
-                                io::stdout().flush()?;
-                                thinking_display_buffer.drain(..safe_len);
-                            }
-                        }
-                    }
-                    crate::ai::StreamEvent::ThinkEnd => {
-                        // With lookahead buffer, clean up remaining content
-                        if !thinking_display_buffer.is_empty() {
-                            // Remove any closing tag and flush remaining safe content
-                            let clean_content = thinking_display_buffer.replace("</think>", "");
-                            if !clean_content.is_empty() {
-                                print!("\x1b[2;37m{}", clean_content);
-                            }
-                        }
-                        // End thinking mode and reset formatting
-                        print!("\x1b[0m\n");
-                        thinking_buffer.clear();
-                        thinking_display_buffer.clear();
-                        in_thinking = false;
-                        io::stdout().flush()?;
-                    }
-                    crate::ai::StreamEvent::ToolCall(tool_call) => {
-                        println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90mwith args:\x1b[0m \x1b[37m{}\x1b[0m", tool_call.name, tool_call.args);
-                        
-                        // Execute the tool
-                        let args = self.prepare_tool_args(&tool_call);
-                        
-                        match self.tool_executor.execute_tool(&tool_call.name, &args).await {
-                            Ok(result) => {
-                                let cleaned_result = Self::strip_ansi_codes(&result);
-                                self.display_tool_output(&cleaned_result);
-                                self.ai_client.add_tool_result(&tool_call.name, &result);
+                            // Lookahead buffer approach: only flush content we're confident is safe
+                            const LOOKAHEAD_SIZE: usize = 20;
+                            if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
+                                // Find safe Unicode boundary for splitting
+                                let target_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
+                                let safe_len = thinking_display_buffer.char_indices()
+                                    .map(|(i, _)| i)
+                                    .take_while(|&i| i <= target_len)
+                                    .last()
+                                    .unwrap_or(0);
                                 
-                                // Tool executed successfully - no automatic continuation
-                                // The AI will naturally continue if more processing is needed via the next user input
-                            }
-                            Err(e) => {
-                                eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
+                                if safe_len > 0 {
+                                    let safe_content = &thinking_display_buffer[..safe_len];
+                                    let lookahead_content = &thinking_display_buffer[safe_len..];
+                                    
+                                    // Only flush if safe content doesn't contain incomplete tags
+                                    let is_safe = if safe_content.contains('<') {
+                                        // Check if all < characters have matching > characters
+                                        safe_content.rfind('<').map_or(true, |pos| {
+                                            safe_content[pos..].contains('>') // Complete tag in safe content
+                                        })
+                                    } else {
+                                        true // No < characters, safe to flush
+                                    };
+                                    
+                                    // Also check lookahead for partial closing tags like "</thin"
+                                    let no_partial_closing_tag = !lookahead_content.starts_with("</") || 
+                                        lookahead_content.contains(">");
+                                    
+                                    if is_safe && no_partial_closing_tag {
+                                        print!("\x1b[2;37m{}", safe_content);
+                                        io::stdout().flush()?;
+                                        thinking_display_buffer.drain(..safe_len);
+                                    }
+                                }
                             }
                         }
-                    }
-                    crate::ai::StreamEvent::Error(error) => {
-                        eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
-                    }
-                    crate::ai::StreamEvent::Done => {
-                        // Add AI response to conversation history (excluding thinking)
-                        if !ai_response.trim().is_empty() {
-                            self.ai_client.add_assistant_message(&ai_response);
+                        crate::ai::StreamEvent::ThinkEnd => {
+                            // With lookahead buffer, clean up remaining content
+                            if !thinking_display_buffer.is_empty() {
+                                // Remove any closing tag and flush remaining safe content
+                                let clean_content = thinking_display_buffer.replace("</think>", "");
+                                if !clean_content.is_empty() {
+                                    print!("\x1b[2;37m{}", clean_content);
+                                }
+                            }
+                            // End thinking mode and reset formatting
+                            print!("\x1b[0m\n");
+                            thinking_buffer.clear();
+                            thinking_display_buffer.clear();
+                            in_thinking = false;
+                            io::stdout().flush()?;
                         }
-                        break;
+                        crate::ai::StreamEvent::ToolCall(tool_call) => {
+                            debug!("Tool call parsed: {} with args: {}", tool_call.name, tool_call.args);
+                            println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90mwith args:\x1b[0m \x1b[37m{}\x1b[0m", tool_call.name, tool_call.args);
+                            
+                            // Execute the tool
+                            let args = self.prepare_tool_args(&tool_call);
+                            
+                            match self.tool_executor.execute_tool(&tool_call.name, &args).await {
+                                Ok(result) => {
+                                    let cleaned_result = Self::strip_ansi_codes(&result);
+                                    self.display_tool_output(&cleaned_result);
+                                    self.ai_client.add_tool_result(&tool_call.name, &result);
+                                    
+                                    // Set flag to continue agentic loop
+                                    tools_executed = true;
+                                }
+                                Err(e) => {
+                                    eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
+                                }
+                            }
+                        }
+                        crate::ai::StreamEvent::Error(error) => {
+                            eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
+                        }
+                        crate::ai::StreamEvent::Done => {
+                            // Add AI response to conversation history (excluding thinking and tool calls)
+                            if !ai_response.trim().is_empty() {
+                                self.ai_client.add_assistant_message(&ai_response);
+                            }
+                            break;
+                        }
                     }
                 }
+                
+                // Continue agentic loop if tools were executed
+                if !tools_executed {
+                    debug!("No tools executed, exiting agentic loop");
+                    break; // No tools executed, exit the loop
+                } else {
+                    debug!("Tools were executed, continuing agentic loop with empty prompt");
+                }
+                // If tools were executed, continue the loop to call AI again
             }
         }
         
@@ -452,8 +536,33 @@ Always be helpful, professional, and focused on empowering the user's developmen
         }
     }
     
+    fn sanitize_input(&self, input: &str) -> Result<String> {
+        // Input validation
+        const MAX_INPUT_LENGTH: usize = 10_000;
+        if input.len() > MAX_INPUT_LENGTH {
+            return Err(anyhow::anyhow!("Input too long (max {} characters)", MAX_INPUT_LENGTH));
+        }
+        
+        // Basic sanitization - remove control characters except newlines and tabs
+        let sanitized = input.chars()
+            .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+            .collect::<String>();
+        
+        // Trim excessive whitespace
+        let trimmed = sanitized.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!("Empty input after sanitization"));
+        }
+        
+        Ok(trimmed.to_string())
+    }
+    
     fn is_shell_command(&self, input: &str) -> bool {
-        let shell_commands = [
+        Self::is_shell_command_static(input)
+    }
+    
+    fn is_shell_command_static(input: &str) -> bool {
+        const SHELL_COMMANDS: &[&str] = &[
             "ls", "cd", "pwd", "mkdir", "rmdir", "rm", "cp", "mv", "cat", "less", "more",
             "grep", "find", "which", "whereis", "ps", "top", "kill", "killall", "jobs",
             "git", "npm", "cargo", "python", "node", "java", "gcc", "make", "cmake",
@@ -467,7 +576,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
         ];
         
         let first_word = input.split_whitespace().next().unwrap_or("");
-        shell_commands.contains(&first_word) || first_word.starts_with("./") || first_word.starts_with("/")
+        SHELL_COMMANDS.contains(&first_word) || first_word.starts_with("./") || first_word.starts_with("/")
     }
     
     async fn run_app<B: Backend>(&mut self, terminal: &mut Terminal<B>, app: &mut ShellApp) -> Result<()> {
@@ -785,12 +894,18 @@ Always be helpful, professional, and focused on empowering the user's developmen
     }
     
     fn strip_ansi_codes(text: &str) -> String {
-        // Simple regex to remove ANSI escape codes
-        let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[mGKH]").unwrap_or_else(|_| {
-            // Fallback: remove common ANSI sequences manually
-            regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap()
+        use std::sync::OnceLock;
+        
+        static ANSI_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+        
+        let regex = ANSI_REGEX.get_or_init(|| {
+            regex::Regex::new(r"\x1b\[[0-9;]*[mGKH]").unwrap_or_else(|_| {
+                // Fallback: remove common ANSI sequences manually
+                regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap()
+            })
         });
-        ansi_regex.replace_all(text, "").to_string()
+        
+        regex.replace_all(text, "").to_string()
     }
 }
 
@@ -968,75 +1083,99 @@ impl ShellApp {
                 }
             }
         } else {
-            // Process with AI
-            match self.ai_client.chat_stream(input).await {
-                Ok(mut stream) => {
-                    while let Some(event) = stream.recv().await {
-                        if !self.processing {
-                            break; // Interrupted
+            // Process with AI - implement agentic loop for TUI mode
+            let mut first_iteration = true;
+            
+            loop {
+                let stream_result = if first_iteration {
+                    first_iteration = false;
+                    self.ai_client.chat_stream(input).await
+                } else {
+                    // Continue conversation after tool execution
+                    self.ai_client.chat_stream("").await
+                };
+                
+                match stream_result {
+                    Ok(mut stream) => {
+                        let mut tools_executed = false;
+                        
+                        while let Some(event) = stream.recv().await {
+                            if !self.processing {
+                                break; // Interrupted
+                            }
+                            
+                            match event {
+                                StreamEvent::Text(text) => {
+                                    self.current_response.push_str(&text);
+                                }
+                                StreamEvent::Think(thinking) => {
+                                    self.messages.push(DisplayMessage::Thinking(thinking));
+                                }
+                                StreamEvent::ThinkStart => {
+                                    // Start of thinking block - for TUI mode
+                                }
+                                StreamEvent::ThinkPartial(partial) => {
+                                    // For now, just accumulate partial thinking - could implement streaming display later
+                                    // This is for the TUI mode, main interactive mode handles it differently
+                                }
+                                StreamEvent::ThinkEnd => {
+                                    // End of thinking block - for TUI mode
+                                }
+                                StreamEvent::ToolCall(tool_call) => {
+                                    self.messages.push(DisplayMessage::ToolCall(
+                                        tool_call.name.clone(),
+                                        tool_call.args.clone()
+                                    ));
+                                    
+                                    // Execute the tool
+                                    let result = self.execute_tool_call(&tool_call).await;
+                                    match result {
+                                        Ok(result) => {
+                                            self.messages.push(DisplayMessage::ToolResult(
+                                                tool_call.name.clone(),
+                                                result.clone()
+                                            ));
+                                            self.scroll_to_bottom();
+                                            self.ai_client.add_tool_result(&tool_call.name, &result);
+                                            
+                                            // Set flag to continue agentic loop
+                                            tools_executed = true;
+                                        }
+                                        Err(e) => {
+                                            self.messages.push(DisplayMessage::Error(
+                                                format!("Tool execution failed: {}", e)
+                                            ));
+                                            self.scroll_to_bottom();
+                                            self.ai_client.add_tool_result(&tool_call.name, &format!("Tool execution failed: {}", e));
+                                        }
+                                    }
+                                }
+                                StreamEvent::Error(error) => {
+                                    self.messages.push(DisplayMessage::Error(error));
+                                    self.scroll_to_bottom();
+                                }
+                                StreamEvent::Done => {
+                                    if !self.current_response.trim().is_empty() {
+                                        self.messages.push(DisplayMessage::Assistant(self.current_response.clone()));
+                                        self.ai_client.add_assistant_message(&self.current_response);
+                                        self.current_response.clear();
+                                    }
+                                    self.scroll_to_bottom();
+                                    break;
+                                }
+                            }
                         }
                         
-                        match event {
-                            StreamEvent::Text(text) => {
-                                self.current_response.push_str(&text);
-                            }
-                            StreamEvent::Think(thinking) => {
-                                self.messages.push(DisplayMessage::Thinking(thinking));
-                            }
-                            StreamEvent::ThinkStart => {
-                                // Start of thinking block - for TUI mode
-                            }
-                            StreamEvent::ThinkPartial(partial) => {
-                                // For now, just accumulate partial thinking - could implement streaming display later
-                                // This is for the unused TUI mode, main interactive mode handles it differently
-                            }
-                            StreamEvent::ThinkEnd => {
-                                // End of thinking block - for TUI mode
-                            }
-                            StreamEvent::ToolCall(tool_call) => {
-                                self.messages.push(DisplayMessage::ToolCall(
-                                    tool_call.name.clone(),
-                                    tool_call.args.clone()
-                                ));
-                                
-                                // Execute the tool
-                                let result = self.execute_tool_call(&tool_call).await;
-                                match result {
-                                    Ok(result) => {
-                                        self.messages.push(DisplayMessage::ToolResult(
-                                            tool_call.name.clone(),
-                                            result.clone()
-                                        ));
-                                        self.scroll_to_bottom();
-                                        self.ai_client.add_tool_result(&tool_call.name, &result);
-                                        
-                                        // Tool executed successfully - ready for next user input
-                                    }
-                                    Err(e) => {
-                                        self.messages.push(DisplayMessage::Error(
-                                            format!("Tool execution failed: {}", e)
-                                        ));
-                                        self.scroll_to_bottom();
-                                    }
-                                }
-                            }
-                            StreamEvent::Error(error) => {
-                                self.messages.push(DisplayMessage::Error(error));
-                                self.scroll_to_bottom();
-                            }
-                            StreamEvent::Done => {
-                                if !self.current_response.trim().is_empty() {
-                                    self.messages.push(DisplayMessage::Assistant(self.current_response.clone()));
-                                    self.current_response.clear();
-                                }
-                                self.scroll_to_bottom();
-                                break;
-                            }
+                        // Continue agentic loop if tools were executed
+                        if !tools_executed {
+                            break; // No tools executed, exit the loop
                         }
+                        // If tools were executed, continue the loop to call AI again
                     }
-                }
-                Err(e) => {
-                    self.messages.push(DisplayMessage::Error(format!("AI request failed: {}", e)));
+                    Err(e) => {
+                        self.messages.push(DisplayMessage::Error(format!("AI request failed: {}", e)));
+                        break;
+                    }
                 }
             }
         }
@@ -1046,17 +1185,7 @@ impl ShellApp {
     }
     
     fn is_shell_command(&self, input: &str) -> bool {
-        let shell_commands = [
-            "ls", "cd", "pwd", "mkdir", "rmdir", "rm", "cp", "mv", "cat", "less", "more",
-            "grep", "find", "which", "whereis", "ps", "top", "kill", "killall", "jobs",
-            "git", "npm", "cargo", "python", "node", "java", "gcc", "make", "cmake",
-            "docker", "kubectl", "curl", "wget", "ssh", "scp", "rsync", "tar", "gzip",
-            "echo", "printf", "date", "whoami", "id", "uname", "df", "du", "free",
-            "history", "alias", "export", "env", "printenv", "set", "unset",
-        ];
-        
-        let first_word = input.split_whitespace().next().unwrap_or("");
-        shell_commands.contains(&first_word) || first_word.starts_with("./") || first_word.starts_with("/")
+        Shell::is_shell_command_static(input)
     }
     
     async fn execute_tool_call(&mut self, tool_call: &ToolCall) -> Result<String> {
@@ -1104,5 +1233,386 @@ impl ShellApp {
         };
         
         self.tool_executor.execute_tool(&tool_call.name, &args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ai::ToolCall;
+    use serde_json::json;
+
+    async fn create_test_shell() -> Shell {
+        let config = Config::default();
+        Shell::new(config).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_shell_new() {
+        let config = Config::default();
+        let shell = Shell::new(config.clone()).await;
+        
+        assert!(shell.is_ok());
+        let shell = shell.unwrap();
+        // Shell should be properly initialized with config
+        // We can't directly access private fields, but we can test that it was created
+    }
+
+    #[test]
+    fn test_strip_ansi_codes() {
+        // Test removing ANSI color codes
+        let input = "\x1b[1;31mError:\x1b[0m This is a test";
+        let expected = "Error: This is a test";
+        assert_eq!(Shell::strip_ansi_codes(input), expected);
+        
+        // Test with multiple ANSI codes
+        let input = "\x1b[1;32mSuccess\x1b[0m: \x1b[33mWarning\x1b[0m message";
+        let expected = "Success: Warning message";
+        assert_eq!(Shell::strip_ansi_codes(input), expected);
+        
+        // Test with no ANSI codes
+        let input = "Plain text";
+        let expected = "Plain text";
+        assert_eq!(Shell::strip_ansi_codes(input), expected);
+        
+        // Test with complex ANSI sequences
+        let input = "\x1b[2;37mThinking...\x1b[0m\n\x1b[1;36mCommand\x1b[0m output";
+        let expected = "Thinking...\nCommand output";
+        assert_eq!(Shell::strip_ansi_codes(input), expected);
+        
+        // Test empty string
+        assert_eq!(Shell::strip_ansi_codes(""), "");
+    }
+
+    #[tokio::test]
+    async fn test_sanitize_input() {
+        let shell = create_test_shell().await;
+        
+        // Test normal input
+        let result = shell.sanitize_input("ls -la");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "ls -la");
+        
+        // Test input with whitespace
+        let result = shell.sanitize_input("  git status  ");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "git status");
+        
+        // Test empty input (should be rejected after sanitization)
+        let result = shell.sanitize_input("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Empty input after sanitization"));
+        
+        // Test input with special characters (should be preserved)
+        let result = shell.sanitize_input("echo \"Hello $USER\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "echo \"Hello $USER\"");
+        
+        // Test very long input (should be rejected)
+        let long_input = "a".repeat(10001);
+        let result = shell.sanitize_input(&long_input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Input too long"));
+    }
+
+    #[test]
+    fn test_is_shell_command_static() {
+        // Test common shell commands
+        assert!(Shell::is_shell_command_static("ls"));
+        assert!(Shell::is_shell_command_static("ls -la"));
+        assert!(Shell::is_shell_command_static("git status"));
+        assert!(Shell::is_shell_command_static("npm install"));
+        assert!(Shell::is_shell_command_static("cargo build"));
+        assert!(Shell::is_shell_command_static("python script.py"));
+        assert!(Shell::is_shell_command_static("node app.js"));
+        assert!(Shell::is_shell_command_static("docker ps"));
+        assert!(Shell::is_shell_command_static("kubectl get pods"));
+        
+        // Test with cd command
+        assert!(Shell::is_shell_command_static("cd /home"));
+        assert!(Shell::is_shell_command_static("cd .."));
+        
+        // Test non-shell commands (conversational)
+        assert!(!Shell::is_shell_command_static("how do I use git?"));
+        assert!(!Shell::is_shell_command_static("explain this code"));
+        assert!(!Shell::is_shell_command_static("help me debug"));
+        assert!(!Shell::is_shell_command_static("what is rust?"));
+        assert!(!Shell::is_shell_command_static(""));
+        
+        // Test edge cases
+        assert!(!Shell::is_shell_command_static("this is a long sentence that doesn't look like a command"));
+        assert!(Shell::is_shell_command_static("./script.sh"));
+        assert!(!Shell::is_shell_command_static("~/bin/my_script")); // ~ expansion not supported
+        
+        // Test commands with complex arguments
+        assert!(Shell::is_shell_command_static("find . -name '*.rs' -type f"));
+        assert!(Shell::is_shell_command_static("grep -r 'pattern' src/"));
+    }
+
+    #[tokio::test]
+    async fn test_is_shell_command() {
+        let shell = create_test_shell().await;
+        
+        // Test that instance method delegates to static method
+        assert!(shell.is_shell_command("ls -la"));
+        assert!(!shell.is_shell_command("how do I use git?"));
+        assert!(shell.is_shell_command("cargo test"));
+        assert!(!shell.is_shell_command("explain this function"));
+    }
+
+    #[tokio::test]
+    async fn test_prepare_tool_args() {
+        let shell = create_test_shell().await;
+        
+        // Test shell_command tool
+        let tool_call = ToolCall {
+            name: "shell_command".to_string(),
+            args: "ls -la".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"command": "ls -la"});
+        assert_eq!(args, expected);
+        
+        // Test write_file tool with newline-separated format
+        let tool_call = ToolCall {
+            name: "write_file".to_string(),
+            args: "test.txt\nHello, world!".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"path": "test.txt", "content": "Hello, world!"});
+        assert_eq!(args, expected);
+        
+        // Test write_file tool with single argument (no content)
+        let tool_call = ToolCall {
+            name: "write_file".to_string(),
+            args: "test.txt".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"path": "test.txt", "content": ""});
+        assert_eq!(args, expected);
+        
+        // Test read_file tool
+        let tool_call = ToolCall {
+            name: "read_file".to_string(),
+            args: "test.txt".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"path": "test.txt"});
+        assert_eq!(args, expected);
+        
+        // Test git_command tool
+        let tool_call = ToolCall {
+            name: "git_command".to_string(),
+            args: "status".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"command": "status"});
+        assert_eq!(args, expected);
+        
+        // Test code_analysis tool
+        let tool_call = ToolCall {
+            name: "code_analysis".to_string(),
+            args: "src/main.rs".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"path": "src/main.rs"});
+        assert_eq!(args, expected);
+        
+        // Test unknown tool (should use args format)
+        let tool_call = ToolCall {
+            name: "unknown_tool".to_string(),
+            args: "some args".to_string(),
+        };
+        let args = shell.prepare_tool_args(&tool_call);
+        let expected = json!({"args": "some args"});
+        assert_eq!(args, expected);
+    }
+
+    #[tokio::test]
+    async fn test_display_tool_output() {
+        let shell = create_test_shell().await;
+        
+        // This function outputs to stdout, so we can't easily test it
+        // without capturing stdout. For now, we just verify it doesn't panic
+        shell.display_tool_output("Test output");
+        shell.display_tool_output("Multi\nline\noutput");
+        shell.display_tool_output("");
+        
+        // Test with long output
+        let long_output = "x".repeat(1000);
+        shell.display_tool_output(&long_output);
+    }
+
+    #[test]
+    fn test_shell_command_detection_edge_cases() {
+        // Test commands that start with common shell tools
+        assert!(Shell::is_shell_command_static("ls"));
+        assert!(Shell::is_shell_command_static("cat file.txt"));
+        assert!(Shell::is_shell_command_static("grep pattern file"));
+        assert!(Shell::is_shell_command_static("find . -name '*.rs'"));
+        assert!(Shell::is_shell_command_static("awk '{print $1}' file"));
+        assert!(Shell::is_shell_command_static("sed 's/old/new/g' file"));
+        
+        // Test path-based commands
+        assert!(Shell::is_shell_command_static("./build.sh"));
+        assert!(Shell::is_shell_command_static("/usr/bin/python3"));
+        assert!(!Shell::is_shell_command_static("~/scripts/deploy.sh")); // ~ expansion not supported
+        
+        // Test commands with pipes and redirects (only first word matters)
+        assert!(Shell::is_shell_command_static("ls | grep test"));
+        assert!(Shell::is_shell_command_static("cat file > output.txt"));
+        assert!(Shell::is_shell_command_static("echo hello >> log.txt"));
+        
+        // Test questions vs commands
+        assert!(!Shell::is_shell_command_static("how do I list files?"));
+        assert!(!Shell::is_shell_command_static("what does ls do?"));
+        assert!(!Shell::is_shell_command_static("can you explain git?"));
+        
+        // Test ambiguous cases
+        assert!(!Shell::is_shell_command_static("show me the files"));
+        assert!(!Shell::is_shell_command_static("list all processes"));
+        assert!(Shell::is_shell_command_static("ps aux"));
+        assert!(!Shell::is_shell_command_static("check if the server is running"));
+        assert!(Shell::is_shell_command_static("curl http://example.com"));
+    }
+
+    #[test]
+    fn test_sanitize_input_edge_cases() {
+        // We need to create a shell instance for this test
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let shell = create_test_shell().await;
+            
+            // Test Unicode input
+            let result = shell.sanitize_input("echo 'Hello 世界'");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "echo 'Hello 世界'");
+            
+            // Test input with tabs and newlines
+            let result = shell.sanitize_input("echo\t'hello'\nworld");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "echo\t'hello'\nworld");
+            
+            // Test input with null bytes (should be filtered out)
+            let result = shell.sanitize_input("echo\0hello");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "echohello");
+            
+            // Test input with control characters (should be filtered out)
+            let result = shell.sanitize_input("echo\x01hello");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "echohello");
+        });
+    }
+
+    #[tokio::test]
+    async fn test_shell_creation_with_custom_config() {
+        let mut config = Config::default();
+        config.model = "custom-model".to_string();
+        config.server = "http://custom:8080".to_string();
+        config.temperature = 0.5;
+        
+        let shell = Shell::new(config).await;
+        assert!(shell.is_ok());
+        
+        // Shell should be created successfully with custom config
+        let _shell = shell.unwrap();
+    }
+
+    #[test]
+    fn test_tool_args_preparation_comprehensive() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let shell = create_test_shell().await;
+            
+            // Test all supported tools with simple string args (the actual format used)
+            let test_cases = vec![
+                (
+                    "shell_command",
+                    "echo hello",
+                    json!({"command": "echo hello"})
+                ),
+                (
+                    "write_file", 
+                    "test.txt\ncontent",
+                    json!({"path": "test.txt", "content": "content"})
+                ),
+                (
+                    "read_file",
+                    "test.txt",
+                    json!({"path": "test.txt"})
+                ),
+                (
+                    "git_command",
+                    "status",
+                    json!({"command": "status"})
+                ),
+                (
+                    "code_analysis",
+                    "src/main.rs",
+                    json!({"path": "src/main.rs"})
+                ),
+            ];
+            
+            for (tool_name, args_str, expected) in test_cases {
+                let tool_call = ToolCall {
+                    name: tool_name.to_string(),
+                    args: args_str.to_string(),
+                };
+                let result = shell.prepare_tool_args(&tool_call);
+                assert_eq!(result, expected, "Failed for tool: {}", tool_name);
+            }
+            
+            // Test fallback behavior for unknown tools
+            let fallback_cases = vec![
+                ("shell_command", "plain text", json!({"command": "plain text"})),
+                ("git_command", "commit -m message", json!({"command": "commit -m message"})),
+                ("unknown_tool", "some args", json!({"args": "some args"})),
+            ];
+            
+            for (tool_name, args_str, expected) in fallback_cases {
+                let tool_call = ToolCall {
+                    name: tool_name.to_string(),
+                    args: args_str.to_string(),
+                };
+                let result = shell.prepare_tool_args(&tool_call);
+                assert_eq!(result, expected, "Failed fallback for tool: {}", tool_name);
+            }
+        });
+    }
+
+    #[test]
+    fn test_ansi_code_stripping_comprehensive() {
+        // Test various ANSI escape sequences based on the actual regex pattern
+        let test_cases = vec![
+            // Basic color codes (these should work)
+            ("\x1b[31mred\x1b[0m", "red"),
+            ("\x1b[1;32mgreen\x1b[0m", "green"),
+            ("\x1b[2;37mgray\x1b[0m", "gray"),
+            
+            // Multiple codes in sequence
+            ("\x1b[1m\x1b[31mbold red\x1b[0m", "bold red"),
+            ("\x1b[33m\x1b[1myellow bold\x1b[0m", "yellow bold"),
+            
+            // Cursor movement codes (H is supported by regex)
+            ("\x1b[2J\x1b[Hclear screen", "\x1b[2Jclear screen"), // J not in regex, H is
+            ("\x1b[1Amove up", "\x1b[1Amove up"), // A not in regex
+            
+            // Mixed content
+            ("normal \x1b[31mred\x1b[0m normal", "normal red normal"),
+            
+            // No ANSI codes
+            ("plain text", "plain text"),
+            
+            // Empty string
+            ("", ""),
+            
+            // Only ANSI codes that match the regex
+            ("\x1b[31m\x1b[0m", ""),
+        ];
+        
+        for (input, expected) in test_cases {
+            let result = Shell::strip_ansi_codes(input);
+            assert_eq!(result, expected, "Failed for input: {:?}", input);
+        }
     }
 }

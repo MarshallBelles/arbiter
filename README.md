@@ -4,16 +4,18 @@ Arbiter is an ULTRA-lightweight AI-powered command-line assistant and peer-progr
 
 ## Features
 
-🤖 **Local AI Model Support**: Runs the fine-tuned `arbiter1.0` model based on Xiaomi's MiMo  
-🖥️ **Professional Terminal Interface**: Beautiful console-based interaction with natural command history  
-🌈 **Professional Colors**: Clean, readable terminal output with intelligent syntax highlighting  
-🌳 **Tree-sitter Integration**: Built-in code parsing for Rust, Java, JS/TS, C#, C++, Go, Python, Zig  
+🤖 **Local AI Model Support**: Runs the fine-tuned `arbiter1.0` model based on Xiaomi's MiMo-VL-7B-RL  
+🖥️ **Professional Console Interface**: Beautiful console-based interaction with native terminal text selection  
+🌈 **Professional ANSI Colors**: Clean, readable terminal output with optimized color schemes  
+🌳 **Tree-sitter Integration**: Built-in code parsing framework for Rust, Java, JS/TS, C#, C++, Go, Python, Zig  
 📡 **Language Server Protocol**: Embedded LSP support for intelligent code completion and analysis  
-⚡ **Real-time Streaming**: XML-based streaming responses with live tool execution  
+⚡ **Real-time Streaming**: XML-based streaming responses with live tool execution feedback  
 🔧 **Smart Command Detection**: Automatic detection of shell vs AI commands with helpful guidance  
-📝 **Multiple Input Modes**: Interactive terminal, direct prompts, or stdin pipes  
-🖱️ **Native Terminal Features**: Full text selection, copy/paste, and scrolling support  
-⚠️ **Interactive Command Guidance**: Smart detection and alternatives for unsupported interactive commands  
+📝 **Multiple Input Modes**: Interactive console, direct prompts, or stdin pipes  
+🖱️ **Native Terminal Features**: Full mouse support for text selection, copy/paste, and scrolling  
+⚠️ **Interactive Command Guidance**: Smart detection and alternatives for unsupported interactive/streaming commands  
+🔄 **Agentic Loop**: Continuous tool execution with result analysis and follow-up actions  
+⚙️ **Auto-Configuration**: Automatic config file creation with sensible defaults  
 
 ## Quick Start
 
@@ -42,16 +44,25 @@ cargo build --release
 
 3. Set up the model:
 ```bash
-# Download the model file
+# Download the model file (MiMo-VL-7B-RL GGUF)
 wget https://huggingface.co/unsloth/MiMo-VL-7B-RL-GGUF/resolve/main/MiMo-VL-7B-RL-UD-Q4_K_XL.gguf -O ARBITER10.gguf
 
 # Create the model in Ollama
 ollama create arbiter1.0 -f Modelfile.arbiter1.0
+
+# Verify model installation
+ollama list | grep arbiter1.0
 ```
 
 4. Install the binary (optional):
 ```bash
 cargo install --path .
+```
+
+5. Configure (optional):
+```bash
+# Edit configuration directly
+arbiter "edit config"
 ```
 
 ## Usage
@@ -64,20 +75,19 @@ Launch Arbiter in interactive mode for a full AI-powered terminal experience:
 arbiter
 ```
 
-You'll see a professional prompt indicating you're in the Arbiter environment:
-```
-(Arbiter) username@hostname$ 
-```
+You'll see a professional console interface with natural terminal integration.
 
 Features in interactive mode:
 - **Natural command history**: Use up/down arrows to navigate previous commands
 - **Shell command passthrough**: Commands like `ls`, `git`, `cargo` execute directly
 - **Intelligent AI interaction**: Ask questions or request help naturally
-- **Professional terminal colors**: Clean, readable output with smart formatting
-- **Text selection & copy**: Select any text with mouse and copy with Ctrl+C
-- **Smart command detection**: Automatic guidance for interactive/streaming commands
-- **Ctrl+C behavior**: Copy selected text, or interrupt operations, or exit
-- **Type `exit` or `quit`**: Clean exit from Arbiter
+- **Professional ANSI colors**: Clean, readable output optimized for terminals
+- **Native text selection**: Select any text with mouse using your terminal's native capabilities
+- **Smart command detection**: Automatic routing between shell commands and AI processing
+- **Interactive command guidance**: Helpful alternatives for unsupported streaming commands
+- **Agentic tool execution**: Continuous loop of tool execution and result analysis
+- **Mouse support**: Full mouse integration for text selection and interaction
+- **Ctrl+C behavior**: Copy selected text, interrupt operations, or exit cleanly
 
 ### Direct Prompts
 
@@ -101,14 +111,14 @@ git diff | arbiter "Review these changes"
 
 ## Configuration
 
-Arbiter automatically creates a configuration file at `~/.config/arbiter/config.toml`:
+Arbiter automatically creates a configuration file at `~/.config/arbiter/config.toml` with optimized defaults:
 
 ```toml
 model = "arbiter1.0"
 server = "http://localhost:11434"
-context_size = 4096
-temperature = 0.1
-max_tokens = 2048
+context_size = 31000
+temperature = 0.7
+max_tokens = 4096
 
 [[lsp_servers]]
 language = "rust"
@@ -126,9 +136,30 @@ command = "typescript-language-server"
 args = ["--stdio"]
 
 [[lsp_servers]]
+language = "typescript"
+command = "typescript-language-server"
+args = ["--stdio"]
+
+[[lsp_servers]]
 language = "go"
 command = "gopls"
 args = []
+
+[[lsp_servers]]
+language = "java"
+command = "jdtls"
+args = []
+
+[[lsp_servers]]
+language = "cpp"
+command = "clangd"
+args = []
+```
+
+**Edit Configuration:**
+```bash
+# Direct config editing
+arbiter "edit config"
 ```
 
 ### Command Line Options
@@ -190,33 +221,50 @@ For now, please use non-streaming alternatives:
 
 ## Available Tools
 
-- **shell_command**: Execute shell commands
-- **write_file**: Create or modify files
-- **read_file**: Read file contents  
-- **git_command**: Execute Git operations
-- **code_analysis**: Analyze code structure with Tree-sitter
+- **shell_command**: Execute shell commands with enhanced interactive command detection
+- **write_file**: Create or modify files with automatic directory creation
+- **read_file**: Read file contents with encoding detection and error handling
+- **git_command**: Execute Git operations with proper repository context
+- **code_analysis**: Analyze code structure with Tree-sitter integration (framework ready)
+
+**Enhanced Features:**
+- Interactive command detection and guidance (tail -f, watch, top, etc.)
+- System shell detection for optimal command execution
+- Comprehensive error handling and user feedback
+- Working directory context preservation
 
 ## Architecture
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ Terminal Shell  │◄──►│   AI Client     │◄──►│     Ollama      │
-│   (Console)     │    │  (XML Stream)   │    │   (arbiter1.0)  │
+│ Console Shell   │◄──►│   AI Client     │◄──►│     Ollama      │
+│ (Ratatui/Mouse) │    │ (XML Stream +   │    │   (arbiter1.0)  │
+│                 │    │  Agentic Loop)  │    │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │
          ▼                       ▼
 ┌─────────────────┐    ┌─────────────────┐
 │ Tool Executor   │    │ Tree-sitter +   │
-│ (Smart Command  │    │ LSP Manager     │
+│ (Enhanced Shell │    │ LSP Manager     │
+│  + Interactive  │    │ (Multi-language)│
 │   Detection)    │    │                 │
+└─────────────────┘    └─────────────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐
+│ Configuration   │    │ Model Config    │
+│ Management      │    │ (31K context +  │
+│ (Auto-create)   │    │  Tool Docs)     │
 └─────────────────┘    └─────────────────┘
 ```
 
 Key architectural improvements:
-- **Console-based interface**: Direct terminal output for perfect text selection and copy/paste
-- **Smart command detection**: Automatic routing between shell commands and AI processing
-- **Professional colors**: ANSI color codes for clean, readable terminal output
+- **Professional console interface**: Native terminal text selection with mouse support
+- **Agentic execution loop**: Continuous tool execution with result analysis
+- **Enhanced tool detection**: Smart routing with interactive command guidance
+- **Professional ANSI colors**: Optimized terminal output for readability
 - **Streaming responses**: Real-time AI responses with live tool execution feedback
+- **Comprehensive configuration**: Auto-generated config with hierarchical overrides
 
 ## Development
 
@@ -347,11 +395,24 @@ curl http://localhost:11434/api/tags
 ollama serve
 ```
 
-### Text Selection/Copy Issues
-Arbiter uses your terminal's native text selection:
-- **Select text**: Click and drag with mouse
+### Text Selection/Copy
+Arbiter uses your terminal's native text selection capabilities:
+- **Select text**: Click and drag with mouse (native terminal selection)
 - **Copy**: Use your terminal's copy shortcut (usually Cmd+C on macOS, Ctrl+Shift+C on Linux)
 - **Paste**: Use your terminal's paste shortcut
+- **Mouse support**: Full mouse integration for improved text interaction
+
+### Performance Issues
+```bash
+# Check if model is loaded properly
+ollama ps
+
+# Restart Ollama service if needed
+ollama serve
+
+# Verify model configuration
+ollama show arbiter1.0
+```
 
 ## Contributing
 

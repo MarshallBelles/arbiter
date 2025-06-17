@@ -272,7 +272,10 @@ impl ToolExecutor {
     
     fn is_complex_interactive_command(&self, command: &str) -> bool {
         // Enhanced detection for complex interactive commands
-        let interactive_patterns = [
+        // Note: Rust regex crate doesn't support lookahead, so we use simpler patterns
+        
+        // Check for specific interactive patterns first
+        let simple_interactive_patterns = [
             // Text editors
             r"\b(vim|vi|nano|emacs|code)\b",
             // Interactive shells
@@ -282,22 +285,45 @@ impl ToolExecutor {
             // Streaming commands
             r"\btail\s+.*-f\b",
             r"\bwatch\b",
-            r"\bping\b(?!.*-c\s+\d+)",
-            // Interactive git
-            r"\bgit\s+(commit|rebase|add)\b(?!.*(-m|--message))",
-            // SSH without command
-            r"\bssh\b(?!.*-c)",
             // Docker interactive
             r"\bdocker\s+run\b.*-i",
         ];
         
-        for pattern in &interactive_patterns {
+        for pattern in &simple_interactive_patterns {
             if regex::Regex::new(pattern)
                 .map(|re| re.is_match(command))
                 .unwrap_or(false) {
                 return true;
             }
         }
+        
+        // Handle special cases that require negative conditions
+        // Check for ping without -c flag
+        if command.contains("ping") && !command.contains("-c") {
+            return true;
+        }
+        
+        // Check for git commit without -m flag
+        if let Ok(re) = regex::Regex::new(r"\bgit\s+commit\b") {
+            if re.is_match(command) && !command.contains("-m") && !command.contains("--message") {
+                return true;
+            }
+        }
+        
+        // Check for git rebase -i (interactive rebase)
+        if let Ok(re) = regex::Regex::new(r"\bgit\s+rebase\s+.*-i\b") {
+            if re.is_match(command) {
+                return true;
+            }
+        }
+        
+        // Check for ssh without -c flag
+        if let Ok(re) = regex::Regex::new(r"\bssh\b") {
+            if re.is_match(command) && !command.contains("-c") {
+                return true;
+            }
+        }
+        
         false
     }
     
@@ -359,5 +385,378 @@ impl ToolExecutor {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::{TempDir, NamedTempFile};
+    use serde_json::json;
+    use std::io::Write as StdWrite;
+
+    async fn create_test_executor() -> (ToolExecutor, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = ToolExecutor::new();
+        executor.set_working_directory(temp_dir.path().to_path_buf());
+        (executor, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_success() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "command": "echo 'Hello, World!'"
+        });
+        
+        let result = executor.execute_tool("shell_command", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Hello, World!"));
+        assert!(output.contains("Command executed successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_failure() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "command": "nonexistent_command_12345"
+        });
+        
+        let result = executor.execute_tool("shell_command", &args).await;
+        assert!(result.is_ok()); // Command execution succeeds, but the command itself fails
+        let output = result.unwrap();
+        assert!(output.contains("Command failed"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_missing_args() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({});
+        
+        let result = executor.execute_tool("shell_command", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'command' argument"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_interactive_detection() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "command": "vim test.txt"
+        });
+        
+        let result = executor.execute_tool("shell_command", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Interactive command detected"));
+        assert!(output.contains("cat <file>"));
+    }
+
+    #[tokio::test]
+    async fn test_write_file_success() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "path": "test.txt",
+            "content": "Hello, World!\nThis is a test file."
+        });
+        
+        let result = executor.execute_tool("write_file", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Successfully wrote"));
+        assert!(output.contains("test.txt"));
+        
+        // Verify file was actually written
+        let file_path = executor.get_working_directory().join("test.txt");
+        assert!(file_path.exists());
+        let content = std::fs::read_to_string(file_path).unwrap();
+        assert_eq!(content, "Hello, World!\nThis is a test file.");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_with_directories() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "path": "nested/dir/test.txt",
+            "content": "File in nested directory"
+        });
+        
+        let result = executor.execute_tool("write_file", &args).await;
+        assert!(result.is_ok());
+        
+        // Verify file and directories were created
+        let file_path = executor.get_working_directory().join("nested/dir/test.txt");
+        assert!(file_path.exists());
+        let content = std::fs::read_to_string(file_path).unwrap();
+        assert_eq!(content, "File in nested directory");
+    }
+
+    #[tokio::test]
+    async fn test_write_file_missing_args() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "path": "test.txt"
+            // Missing content
+        });
+        
+        let result = executor.execute_tool("write_file", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'content' argument"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_success() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // First write a file
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello, World!\nThis is a test.").unwrap();
+        
+        let args = json!({
+            "path": "test.txt"
+        });
+        
+        let result = executor.execute_tool("read_file", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("File content of test.txt"));
+        assert!(output.contains("Hello, World!"));
+        assert!(output.contains("This is a test."));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_not_found() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "path": "nonexistent.txt"
+        });
+        
+        let result = executor.execute_tool("read_file", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to read file"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_missing_args() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({});
+        
+        let result = executor.execute_tool("read_file", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'path' argument"));
+    }
+
+    #[tokio::test]
+    async fn test_git_command_success() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Initialize a git repository first
+        let init_result = executor.execute_tool("git_command", &json!({"command": "init"})).await;
+        assert!(init_result.is_ok());
+        
+        let args = json!({
+            "command": "status"
+        });
+        
+        let result = executor.execute_tool("git_command", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Git command executed successfully") || output.contains("Git command failed"));
+    }
+
+    #[tokio::test]
+    async fn test_git_command_complex() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "command": "log --oneline -n 5"
+        });
+        
+        let result = executor.execute_tool("git_command", &args).await;
+        // This should work even if it fails (no commits), as long as parsing works
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_git_command_missing_args() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({});
+        
+        let result = executor.execute_tool("git_command", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'command' argument"));
+    }
+
+    #[tokio::test]
+    async fn test_code_analysis_rust_file() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create a Rust file
+        let rust_content = r#"
+fn main() {
+    println!("Hello, world!");
+}
+
+struct TestStruct {
+    field: i32,
+}
+
+impl TestStruct {
+    fn new(value: i32) -> Self {
+        Self { field: value }
+    }
+}
+"#;
+        let file_path = temp_dir.path().join("test.rs");
+        std::fs::write(&file_path, rust_content).unwrap();
+        
+        let args = json!({
+            "path": "test.rs"
+        });
+        
+        let result = executor.execute_tool("code_analysis", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Code analysis for test.rs"));
+        assert!(output.contains("Lines:"));
+        assert!(output.contains("Characters:"));
+        assert!(output.contains("Words:"));
+        assert!(output.contains("Detected language:"));
+    }
+
+    #[tokio::test]
+    async fn test_code_analysis_missing_file() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "path": "nonexistent.rs"
+        });
+        
+        let result = executor.execute_tool("code_analysis", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to read file for analysis"));
+    }
+
+    #[tokio::test]
+    async fn test_code_analysis_missing_args() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({});
+        
+        let result = executor.execute_tool("code_analysis", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing 'path' argument"));
+    }
+
+    #[tokio::test]
+    async fn test_unknown_tool() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "some": "args"
+        });
+        
+        let result = executor.execute_tool("unknown_tool", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown tool: unknown_tool"));
+    }
+
+    #[test]
+    fn test_detect_shell() {
+        let executor = ToolExecutor::new();
+        let shell = executor.detect_shell();
+        
+        // Should detect a valid shell
+        assert!(!shell.is_empty());
+        assert!(shell.contains("sh") || shell.contains("bash") || shell.contains("cmd"));
+    }
+
+    #[test]
+    fn test_get_shell_args() {
+        let executor = ToolExecutor::new();
+        
+        assert_eq!(executor.get_shell_args("bash"), vec!["-c"]);
+        assert_eq!(executor.get_shell_args("zsh"), vec!["-c"]);
+        assert_eq!(executor.get_shell_args("sh"), vec!["-c"]);
+        assert_eq!(executor.get_shell_args("cmd"), vec!["/C"]);
+        assert_eq!(executor.get_shell_args("powershell"), vec!["-Command"]);
+    }
+
+    #[test]
+    fn test_is_complex_interactive_command() {
+        let executor = ToolExecutor::new();
+        
+        // Interactive commands
+        assert!(executor.is_complex_interactive_command("vim test.txt"));
+        assert!(executor.is_complex_interactive_command("nano file.txt"));
+        assert!(executor.is_complex_interactive_command("top"));
+        assert!(executor.is_complex_interactive_command("tail -f log.txt"));
+        assert!(executor.is_complex_interactive_command("watch ls"));
+        assert!(executor.is_complex_interactive_command("git commit"));
+        assert!(executor.is_complex_interactive_command("docker run -it ubuntu"));
+        assert!(executor.is_complex_interactive_command("ping example.com"));
+        assert!(executor.is_complex_interactive_command("ssh user@host"));
+        
+        // Non-interactive commands
+        assert!(!executor.is_complex_interactive_command("ls -la"));
+        assert!(!executor.is_complex_interactive_command("cat file.txt"));
+        assert!(!executor.is_complex_interactive_command("git status"));
+        assert!(!executor.is_complex_interactive_command("git commit -m 'message'"));
+        assert!(!executor.is_complex_interactive_command("git commit --message 'test'"));
+        assert!(!executor.is_complex_interactive_command("ping -c 4 example.com"));
+        assert!(!executor.is_complex_interactive_command("ssh -c 'ls' user@host"));
+    }
+
+    #[test]
+    fn test_working_directory() {
+        let mut executor = ToolExecutor::new();
+        let original_dir = executor.get_working_directory().to_path_buf();
+        
+        let temp_dir = TempDir::new().unwrap();
+        executor.set_working_directory(temp_dir.path().to_path_buf());
+        
+        assert_eq!(executor.get_working_directory(), temp_dir.path());
+        assert_ne!(executor.get_working_directory(), original_dir);
+    }
+
+    #[tokio::test]
+    async fn test_file_operations_integration() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Write a file
+        let write_result = executor.execute_tool("write_file", &json!({
+            "path": "integration_test.txt",
+            "content": "Integration test content\nLine 2\nLine 3"
+        })).await;
+        assert!(write_result.is_ok());
+        
+        // Read the file back
+        let read_result = executor.execute_tool("read_file", &json!({
+            "path": "integration_test.txt"
+        })).await;
+        assert!(read_result.is_ok());
+        let read_output = read_result.unwrap();
+        assert!(read_output.contains("Integration test content"));
+        assert!(read_output.contains("Line 2"));
+        assert!(read_output.contains("Line 3"));
+        
+        // Analyze the file
+        let analysis_result = executor.execute_tool("code_analysis", &json!({
+            "path": "integration_test.txt"
+        })).await;
+        assert!(analysis_result.is_ok());
+        let analysis_output = analysis_result.unwrap();
+        assert!(analysis_output.contains("Lines: 3"));
     }
 }
