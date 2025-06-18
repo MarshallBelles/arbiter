@@ -4,9 +4,69 @@ use reqwest::Client;
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, warn, info};
 
 use crate::config::Config;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelType {
+    Arbiter,    // Reasoning and planning model
+    Winchester, // Execution and coding model
+    Custom(String), // Custom model by name
+}
+
+impl ModelType {
+    pub fn model_name(&self) -> String {
+        match self {
+            ModelType::Arbiter => "arbiter".to_string(),
+            ModelType::Winchester => "winchester".to_string(),
+            ModelType::Custom(name) => name.clone(),
+        }
+    }
+    
+    pub fn description(&self) -> String {
+        match self {
+            ModelType::Arbiter => "Reasoning and planning model".to_string(),
+            ModelType::Winchester => "Execution and coding model".to_string(),
+            ModelType::Custom(name) => format!("Custom model: {}", name),
+        }
+    }
+    
+    pub fn from_name(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "arbiter" => ModelType::Arbiter,
+            "winchester" => ModelType::Winchester,
+            _ => ModelType::Custom(name.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskPhase {
+    Planning,   // Complex reasoning, task decomposition
+    Execution,  // Tool calls, code generation
+    Evaluation, // Result analysis, next step planning
+    Completion, // Final summary and termination
+}
+
+impl TaskPhase {
+    pub fn preferred_model(&self) -> ModelType {
+        match self {
+            TaskPhase::Planning => ModelType::Arbiter,
+            TaskPhase::Execution => ModelType::Winchester,
+            TaskPhase::Evaluation => ModelType::Arbiter,
+            TaskPhase::Completion => ModelType::Arbiter,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelState {
+    pub current_model: ModelType,
+    pub current_phase: TaskPhase,
+    pub switch_count: usize,
+    pub last_switch_time: std::time::Instant,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -71,15 +131,244 @@ pub struct AiClient {
     client: Client,
     config: Config,
     conversation_history: Vec<Message>,
+    model_state: ModelState,
+    context_limit: usize,
 }
 
 impl AiClient {
     pub fn new(config: Config) -> Self {
-        Self {
+        let context_limit = config.orchestration.context_compression_threshold;
+        
+        // Validate model configurations
+        if !config.orchestration.arbiter_model.enabled && !config.orchestration.winchester_model.enabled {
+            warn!("Both models are disabled in configuration. At least one model should be enabled.");
+        }
+        
+        // Choose initial model based on what's enabled
+        let initial_model = if config.orchestration.arbiter_model.enabled {
+            ModelType::Arbiter
+        } else if config.orchestration.winchester_model.enabled {
+            ModelType::Winchester
+        } else {
+            // Fallback to Arbiter even if disabled (will show error when used)
+            ModelType::Arbiter
+        };
+        
+        let ai_client = Self {
             client: Client::new(),
             config,
             conversation_history: Vec::new(),
+            model_state: ModelState {
+                current_model: initial_model,
+                current_phase: TaskPhase::Planning,
+                switch_count: 0,
+                last_switch_time: std::time::Instant::now(),
+            },
+            context_limit,
+        };
+        
+        info!("Initializing AI client with {} model ({})", 
+              ai_client.model_state.current_model.model_name(),
+              ai_client.get_current_model_server());
+        
+        ai_client
+    }
+    
+    /// Switch to a different model if needed
+    pub async fn switch_model_if_needed(&mut self, target_model: ModelType) -> Result<bool> {
+        if self.model_state.current_model == target_model {
+            return Ok(false); // No switch needed
         }
+        
+        // Check if target model is enabled
+        let target_config = match self.get_model_config(&target_model) {
+            Some(config) if config.enabled => config,
+            Some(config) => {
+                warn!("Attempted to switch to disabled model {}. Staying with current model.", config.name);
+                return Ok(false);
+            }
+            None => {
+                warn!("Model configuration not found for {:?}. Staying with current model.", target_model);
+                return Ok(false);
+            }
+        };
+        
+        let current_config = self.get_model_config(&self.model_state.current_model)
+            .expect("Current model should always have valid config");
+        
+        info!("Switching from {} ({}) to {} ({})", 
+              current_config.name,
+              current_config.server,
+              target_config.name,
+              target_config.server);
+        
+        // Load the target model
+        self.load_model(target_model.clone()).await?;
+        
+        // Update state
+        self.model_state.current_model = target_model;
+        self.model_state.switch_count += 1;
+        self.model_state.last_switch_time = std::time::Instant::now();
+        
+        Ok(true)
+    }
+    
+    /// Load a specific model in Ollama
+    async fn load_model(&self, model_type: ModelType) -> Result<()> {
+        let model_config = match self.get_model_config(&model_type) {
+            Some(config) if config.enabled => config,
+            Some(config) => {
+                return Err(anyhow::anyhow!("Model {} is disabled in configuration", config.name));
+            }
+            None => {
+                return Err(anyhow::anyhow!("Model configuration not found for {:?}", model_type));
+            }
+        };
+        
+        // First, try to pull/load the model to ensure it's available
+        let pull_response = self.client
+            .post(&format!("{}/api/pull", model_config.server))
+            .json(&serde_json::json!({
+                "name": model_config.name,
+                "stream": false
+            }))
+            .send()
+            .await
+            .context("Failed to load model")?;
+            
+        if !pull_response.status().is_success() {
+            let error_text = pull_response.text().await.unwrap_or_default();
+            warn!("Model load returned non-success status: {}", error_text);
+            // Continue anyway - model might already be loaded
+        }
+        
+        debug!("Successfully loaded model: {} from {}", model_config.name, model_config.server);
+        Ok(())
+    }
+    
+    /// Get current model information
+    pub fn get_model_state(&self) -> &ModelState {
+        &self.model_state
+    }
+    
+    /// Get the current model configuration
+    fn get_model_config(&self, model_type: &ModelType) -> Option<&crate::config::ModelConfig> {
+        match model_type {
+            ModelType::Arbiter => Some(&self.config.orchestration.arbiter_model),
+            ModelType::Winchester => Some(&self.config.orchestration.winchester_model),
+            ModelType::Custom(name) => {
+                self.config.orchestration.custom_models
+                    .iter()
+                    .find(|model| model.name == *name)
+            }
+        }
+    }
+    
+    /// Get the current model name from config
+    fn get_current_model_name(&self) -> String {
+        self.get_model_config(&self.model_state.current_model)
+            .map(|config| config.name.clone())
+            .unwrap_or_else(|| self.model_state.current_model.model_name())
+    }
+    
+    /// Get the current model temperature from config
+    fn get_current_model_temperature(&self) -> f32 {
+        self.get_model_config(&self.model_state.current_model)
+            .map(|config| config.temperature)
+            .unwrap_or(0.7) // Default temperature
+    }
+    
+    /// Get the current model server endpoint
+    fn get_current_model_server(&self) -> String {
+        self.get_model_config(&self.model_state.current_model)
+            .map(|config| config.server.clone())
+            .unwrap_or_else(|| self.config.server.clone()) // Fallback to legacy config
+    }
+    
+    /// Set task phase and switch model if needed
+    pub async fn set_task_phase(&mut self, phase: TaskPhase) -> Result<bool> {
+        self.model_state.current_phase = phase;
+        let preferred_model = phase.preferred_model();
+        self.switch_model_if_needed(preferred_model).await
+    }
+    
+    /// Get all available models
+    pub fn get_available_models(&self) -> Vec<(ModelType, &crate::config::ModelConfig)> {
+        let mut models = Vec::new();
+        
+        if self.config.orchestration.arbiter_model.enabled {
+            models.push((ModelType::Arbiter, &self.config.orchestration.arbiter_model));
+        }
+        
+        if self.config.orchestration.winchester_model.enabled {
+            models.push((ModelType::Winchester, &self.config.orchestration.winchester_model));
+        }
+        
+        for custom_model in &self.config.orchestration.custom_models {
+            if custom_model.enabled {
+                models.push((ModelType::Custom(custom_model.name.clone()), custom_model));
+            }
+        }
+        
+        models
+    }
+    
+    /// Force switch to a specific model by name
+    pub async fn switch_to_model_by_name(&mut self, model_name: &str) -> Result<bool> {
+        if !self.config.orchestration.allow_model_override {
+            return Err(anyhow::anyhow!("Model override is disabled in configuration"));
+        }
+        
+        let target_model = ModelType::from_name(model_name);
+        
+        // Check if the model is available and enabled
+        match self.get_model_config(&target_model) {
+            Some(config) if config.enabled => {
+                info!("Manual model switch requested to: {} ({})", config.name, config.server);
+                self.switch_model_if_needed(target_model).await
+            }
+            Some(_) => {
+                Err(anyhow::anyhow!("Model '{}' is disabled in configuration", model_name))
+            }
+            None => {
+                Err(anyhow::anyhow!("Model '{}' not found in configuration", model_name))
+            }
+        }
+    }
+    
+    /// Classify request complexity to determine if planning is needed
+    pub fn classify_request_complexity(&self, input: &str) -> TaskPhase {
+        let input_lower = input.to_lowercase();
+        
+        // Direct execution indicators
+        let direct_execution_patterns = [
+            "ls", "pwd", "cat", "echo", "git status", "git log",
+            "read file", "show me", "what is in", "list",
+        ];
+        
+        // Complex planning indicators  
+        let complex_planning_patterns = [
+            "create", "build", "implement", "design", "refactor", "optimize",
+            "how do i", "help me", "i need to", "can you", "debug", "fix",
+            "analyze", "review", "improve", "add feature", "modify",
+        ];
+        
+        // Check for direct execution patterns
+        for pattern in &direct_execution_patterns {
+            if input_lower.contains(pattern) {
+                return TaskPhase::Execution;
+            }
+        }
+        
+        // Check for complex planning patterns
+        for pattern in &complex_planning_patterns {
+            if input_lower.contains(pattern) {
+                return TaskPhase::Planning;
+            }
+        }
+        
+        // Default to planning for ambiguous requests
+        TaskPhase::Planning
     }
     
     pub fn add_system_message(&mut self, content: &str) {
@@ -215,24 +504,34 @@ Let me check the current git status of your repository.
     }
     
     pub async fn chat_stream(&mut self, user_input: &str) -> Result<mpsc::Receiver<StreamEvent>> {
-        self.add_user_message(user_input);
+        // Only add user message if it's not empty (for continuation calls)
+        if !user_input.is_empty() {
+            self.add_user_message(user_input);
+        }
+        
+        // Compress context if we're approaching limits
+        if self.estimate_token_count() > self.context_limit {
+            self.compress_conversation_context();
+        }
         
         let request = OllamaRequest {
-            model: self.config.model.clone(),
+            model: self.get_current_model_name(),
             messages: self.conversation_history.clone(),
             stream: true,
             options: OllamaOptions {
-                temperature: self.config.temperature,
+                temperature: self.get_current_model_temperature(),
                 num_ctx: self.config.context_size,
                 num_predict: self.config.max_tokens,
             },
         };
         
-        debug!("Sending streaming request to Ollama: {:?}", request);
+        let server_endpoint = self.get_current_model_server();
+        debug!("Sending streaming request to {} using {} model: {:?}", 
+               server_endpoint, self.get_current_model_name(), request);
         
         let response = self
             .client
-            .post(&format!("{}/api/chat", self.config.server))
+            .post(&format!("{}/api/chat", server_endpoint))
             .json(&request)
             .send()
             .await
@@ -311,6 +610,99 @@ Let me check the current git status of your repository.
         });
         
         Ok(rx)
+    }
+    
+    /// Estimate token count for conversation history
+    fn estimate_token_count(&self) -> usize {
+        // Rough estimation: ~4 characters per token
+        let total_chars: usize = self.conversation_history
+            .iter()
+            .map(|msg| msg.content.len())
+            .sum();
+        total_chars / 4
+    }
+    
+    /// Compress conversation context when approaching limits
+    fn compress_conversation_context(&mut self) {
+        if self.conversation_history.len() <= 4 {
+            return; // Keep minimum context
+        }
+        
+        info!("Compressing conversation context from {} messages", self.conversation_history.len());
+        
+        // Keep system message, last user message, and last assistant message
+        let mut compressed = Vec::new();
+        
+        // Always keep system message
+        if let Some(system_msg) = self.conversation_history.first() {
+            if system_msg.role == "system" {
+                compressed.push(system_msg.clone());
+            }
+        }
+        
+        // Keep last few messages for immediate context
+        let keep_count = 3; // Last 3 messages
+        let start_idx = self.conversation_history.len().saturating_sub(keep_count);
+        for msg in &self.conversation_history[start_idx..] {
+            if msg.role != "system" { // Don't duplicate system message
+                compressed.push(msg.clone());
+            }
+        }
+        
+        // Add compression marker
+        if compressed.len() < self.conversation_history.len() {
+            let removed_count = self.conversation_history.len() - compressed.len();
+            let compression_msg = Message {
+                role: "system".to_string(),
+                content: format!("[Context compressed: {} previous messages summarized for efficiency]", removed_count),
+            };
+            compressed.insert(1, compression_msg); // Insert after main system message
+        }
+        
+        self.conversation_history = compressed;
+        debug!("Compressed conversation to {} messages", self.conversation_history.len());
+    }
+    
+    /// Create a task-focused context for model handoff
+    pub fn create_handoff_context(&self, task_summary: &str, current_phase: TaskPhase) -> Vec<Message> {
+        let mut handoff_context = Vec::new();
+        
+        // Create phase-specific system message
+        let phase_instruction = match current_phase {
+            TaskPhase::Planning => {
+                "You are in PLANNING phase. Focus on breaking down the task, understanding requirements, and creating a clear execution strategy."
+            }
+            TaskPhase::Execution => {
+                "You are in EXECUTION phase. Focus on implementing the plan using available tools. Be precise and systematic."
+            }
+            TaskPhase::Evaluation => {
+                "You are in EVALUATION phase. Analyze the results, check for errors, and determine next steps."
+            }
+            TaskPhase::Completion => {
+                "You are in COMPLETION phase. Provide a final summary and ensure all requirements are met."
+            }
+        };
+        
+        handoff_context.push(Message {
+            role: "system".to_string(),
+            content: format!("{}\n\nCurrent task: {}", phase_instruction, task_summary),
+        });
+        
+        // Include recent relevant context
+        let relevant_messages: Vec<_> = self.conversation_history
+            .iter()
+            .rev()
+            .take(3) // Last 3 messages for immediate context
+            .filter(|msg| msg.role != "system") // Skip system messages except our phase instruction
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+            
+        handoff_context.extend(relevant_messages);
+        
+        handoff_context
     }
     
     pub fn parse_xml_response(&self, content: &str) -> ParsedResponse {

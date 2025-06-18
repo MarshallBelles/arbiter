@@ -5,12 +5,34 @@ use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub model: String,
+    pub model: String, // Legacy field - kept for backward compatibility
     pub server: String,
     pub context_size: usize,
-    pub temperature: f32,
+    pub temperature: f32, // Legacy field - kept for backward compatibility
     pub max_tokens: usize,
     pub lsp_servers: Vec<LspServerConfig>,
+    pub orchestration: OrchestrationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationConfig {
+    pub enabled: bool,
+    pub arbiter_model: ModelConfig,
+    pub winchester_model: ModelConfig,
+    pub max_iterations: usize,
+    pub context_compression_threshold: usize,
+    pub model_switch_cooldown_ms: u64,
+    pub custom_models: Vec<ModelConfig>,
+    pub allow_model_override: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    pub name: String,
+    pub temperature: f32,
+    pub description: String,
+    pub server: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,14 +42,64 @@ pub struct LspServerConfig {
     pub args: Vec<String>,
 }
 
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            arbiter_model: ModelConfig {
+                name: "arbiter".to_string(),
+                temperature: 0.7,
+                description: "Reasoning and planning model for complex tasks".to_string(),
+                server: "http://localhost:11434".to_string(),
+                enabled: true,
+            },
+            winchester_model: ModelConfig {
+                name: "winchester".to_string(),
+                temperature: 0.15,
+                description: "Execution and coding model for precise implementation".to_string(),
+                server: "http://localhost:11435".to_string(), // Default to different port - change to your second machine's IP:11434
+                enabled: true,
+            },
+            max_iterations: 10,
+            context_compression_threshold: 6000,
+            model_switch_cooldown_ms: 500,
+            custom_models: vec![
+                ModelConfig {
+                    name: "llama3.2".to_string(),
+                    temperature: 0.8,
+                    description: "Meta's Llama 3.2 for general tasks".to_string(),
+                    server: "http://localhost:11434".to_string(),
+                    enabled: false, // Disabled by default, enable as needed
+                },
+                ModelConfig {
+                    name: "qwen2.5-coder".to_string(),
+                    temperature: 0.2,
+                    description: "Qwen 2.5 Coder for programming tasks".to_string(),
+                    server: "http://localhost:11434".to_string(),
+                    enabled: false,
+                },
+                ModelConfig {
+                    name: "deepseek-coder".to_string(),
+                    temperature: 0.1,
+                    description: "DeepSeek Coder for code generation".to_string(),
+                    server: "http://localhost:11434".to_string(),
+                    enabled: false,
+                },
+            ],
+            allow_model_override: true,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "arbiter1.0".to_string(),
+            model: "arbiter".to_string(), // Default to reasoning model
             server: "http://localhost:11434".to_string(),
-            context_size: 31000,
-            temperature: 0.7,
+            context_size: 8192, // Updated to match new model configs
+            temperature: 0.7, // Legacy field
             max_tokens: 4096,
+            orchestration: OrchestrationConfig::default(),
             lsp_servers: vec![
                 LspServerConfig {
                     language: "rust".to_string(),
@@ -197,6 +269,7 @@ mod tests {
             context_size: 1000,
             temperature: 0.5,
             max_tokens: 500,
+            orchestration: OrchestrationConfig::default(),
             lsp_servers: vec![
                 LspServerConfig {
                     language: "rust".to_string(),
@@ -211,9 +284,9 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         
-        assert_eq!(config.model, "arbiter1.0");
+        assert_eq!(config.model, "arbiter");
         assert_eq!(config.server, "http://localhost:11434");
-        assert_eq!(config.context_size, 31000);
+        assert_eq!(config.context_size, 8192);
         assert_eq!(config.temperature, 0.7);
         assert_eq!(config.max_tokens, 4096);
         assert_eq!(config.lsp_servers.len(), 10);
@@ -288,7 +361,7 @@ mod tests {
         // Test that default config can be created and serialized
         let default_config = Config::default();
         let config_str = toml::to_string_pretty(&default_config).unwrap();
-        assert!(config_str.contains("model = \"arbiter1.0\""));
+        assert!(config_str.contains("model = \"arbiter\""));
         assert!(config_str.contains("server = \"http://localhost:11434\""));
     }
 

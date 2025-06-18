@@ -24,6 +24,7 @@ impl ToolExecutor {
             "read_file" => self.read_file(args).await,
             "git_command" => self.execute_git_command(args).await,
             "code_analysis" => self.analyze_code(args).await,
+            "debug_directory" => self.debug_directory(args).await,
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         }
     }
@@ -122,10 +123,33 @@ impl ToolExecutor {
         
         let full_path = self.working_directory.join(path);
         
-        let content = tokio::fs::read_to_string(&full_path).await
-            .context("Failed to read file")?;
+        info!("Attempting to read file: {} (full path: {})", path, full_path.display());
+        info!("Working directory: {}", self.working_directory.display());
         
-        info!("Read file: {}", full_path.display());
+        // Check if file exists first
+        if !full_path.exists() {
+            return Err(anyhow::anyhow!(
+                "File does not exist: {} (full path: {})", 
+                path, full_path.display()
+            ));
+        }
+        
+        // Check if it's actually a file
+        if !full_path.is_file() {
+            return Err(anyhow::anyhow!(
+                "Path exists but is not a file: {} (full path: {})", 
+                path, full_path.display()
+            ));
+        }
+        
+        // Try to read the file with detailed error information
+        let content = tokio::fs::read_to_string(&full_path).await
+            .with_context(|| format!(
+                "Failed to read file: {} (full path: {}). Check file permissions and encoding.", 
+                path, full_path.display()
+            ))?;
+        
+        info!("Successfully read file: {} ({} bytes)", full_path.display(), content.len());
         Ok(format!("File content of {}:\n{}", path, content))
     }
     
@@ -202,6 +226,48 @@ impl ToolExecutor {
         
         info!("Analyzed code file: {}", full_path.display());
         Ok(analysis)
+    }
+    
+    async fn debug_directory(&mut self, _args: &Value) -> Result<String> {
+        let mut debug_info = format!("Debug Directory Information:\n");
+        debug_info.push_str(&format!("Working Directory: {}\n", self.working_directory.display()));
+        debug_info.push_str(&format!("Working Directory Exists: {}\n", self.working_directory.exists()));
+        debug_info.push_str(&format!("Working Directory Is Dir: {}\n", self.working_directory.is_dir()));
+        
+        // Get the actual current working directory from the system
+        match std::env::current_dir() {
+            Ok(current) => {
+                debug_info.push_str(&format!("System Current Dir: {}\n", current.display()));
+                debug_info.push_str(&format!("Directories Match: {}\n", current == self.working_directory));
+            }
+            Err(e) => {
+                debug_info.push_str(&format!("Failed to get system current dir: {}\n", e));
+            }
+        }
+        
+        // List files in the working directory
+        debug_info.push_str("\nFiles in working directory:\n");
+        match tokio::fs::read_dir(&self.working_directory).await {
+            Ok(mut entries) => {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let metadata = entry.metadata().await;
+                    let file_type = match metadata {
+                        Ok(meta) => {
+                            if meta.is_file() { "file" }
+                            else if meta.is_dir() { "dir" }
+                            else { "other" }
+                        }
+                        Err(_) => "unknown"
+                    };
+                    debug_info.push_str(&format!("  {} ({})\n", entry.file_name().to_string_lossy(), file_type));
+                }
+            }
+            Err(e) => {
+                debug_info.push_str(&format!("Failed to read directory: {}\n", e));
+            }
+        }
+        
+        Ok(debug_info)
     }
     
     pub fn set_working_directory(&mut self, path: std::path::PathBuf) {

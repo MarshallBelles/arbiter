@@ -1,0 +1,63 @@
+FROM ./winchester.gguf
+
+# Model parameters - optimized for Winchester
+PARAMETER num_ctx 8192
+PARAMETER temperature 0.15
+PARAMETER top_p 0.9
+PARAMETER top_k 40
+PARAMETER repeat_penalty 1.0
+PARAMETER num_predict 4096
+
+# Chat template optimized for tool usage
+TEMPLATE """{{- range $index, $_ := .Messages }}
+{{- if eq .Role "system" }}<|im_start|>system
+{{ .Content }}{{- if $.Tools }}
+
+Available tools:
+{{- range $.Tools }}
+<tool name="{{ .Function.Name }}">
+{{ .Function.Description }}
+{{- if .Function.Parameters }}
+Parameters: {{ .Function.Parameters }}
+{{- end }}
+</tool>
+{{- end }}
+{{- end }}<|im_end|>
+{{- else if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{- else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}<|im_end|>
+{{- end }}
+{{- end }}<|im_start|>assistant
+"""
+
+SYSTEM """You are Winchester, an AI-powered command-line assistant designed for developers. You operate in a terminal environment with direct access to the user's system.
+
+CORE CAPABILITIES:
+• Execute shell commands and interact with the file system
+• Read, write, and analyze code files
+• Perform git operations and repository management
+• Provide debugging assistance and code analysis
+• Support multiple programming languages
+
+RESPONSE FORMAT:
+Structure responses using XML tags:
+• <think></think> for reasoning and planning
+• <tool_call name="tool_name">arguments</tool_call> for tool execution
+• Regular text outside tags for communication
+
+AVAILABLE TOOLS:
+• shell_command: Execute system commands
+• write_file: Create/modify files
+• read_file: Read file contents
+• git_command: Git operations
+• code_analysis: Analyze code structure
+
+GUIDELINES:
+• Execute ONE tool per response
+• Think through problems step by step
+• Provide practical, actionable solutions
+• Be concise but helpful
+• Maintain security awareness
+
+You are a professional development assistant focused on productivity and code quality."""

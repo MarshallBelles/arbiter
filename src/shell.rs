@@ -15,14 +15,91 @@ use ratatui::{
 use std::io;
 use tracing::{debug, error, info};
 
-use crate::ai::{AiClient, StreamEvent, ToolCall};
+use crate::ai::{AiClient, StreamEvent, ToolCall, TaskPhase, ModelType};
 use crate::config::Config;
 use crate::tools::ToolExecutor;
+
+#[derive(Debug, Clone)]
+pub struct TaskState {
+    pub phase: TaskPhase,
+    pub iteration_count: usize,
+    pub max_iterations: usize,
+    pub task_summary: String,
+    pub tools_executed_this_iteration: usize,
+    pub total_tools_executed: usize,
+    pub last_phase_change: std::time::Instant,
+}
+
+impl TaskState {
+    pub fn new(initial_task: &str) -> Self {
+        Self {
+            phase: TaskPhase::Planning,
+            iteration_count: 0,
+            max_iterations: 10, // Prevent infinite loops
+            task_summary: initial_task.to_string(),
+            tools_executed_this_iteration: 0,
+            total_tools_executed: 0,
+            last_phase_change: std::time::Instant::now(),
+        }
+    }
+    
+    pub fn should_continue(&self) -> bool {
+        self.iteration_count < self.max_iterations
+    }
+    
+    pub fn advance_iteration(&mut self) {
+        self.iteration_count += 1;
+        self.tools_executed_this_iteration = 0;
+    }
+    
+    pub fn change_phase(&mut self, new_phase: TaskPhase) {
+        if self.phase != new_phase {
+            info!("Task phase transition: {:?} -> {:?}", self.phase, new_phase);
+            self.phase = new_phase;
+            self.last_phase_change = std::time::Instant::now();
+        }
+    }
+    
+    pub fn record_tool_execution(&mut self) {
+        self.tools_executed_this_iteration += 1;
+        self.total_tools_executed += 1;
+    }
+    
+    pub fn determine_next_phase(&self, had_tool_calls: bool, had_errors: bool) -> TaskPhase {
+        match self.phase {
+            TaskPhase::Planning => {
+                if had_tool_calls {
+                    TaskPhase::Execution // Move to execution after planning
+                } else {
+                    TaskPhase::Completion // No tools needed, just complete
+                }
+            }
+            TaskPhase::Execution => {
+                if had_errors {
+                    TaskPhase::Evaluation // Evaluate errors
+                } else if self.tools_executed_this_iteration > 0 {
+                    TaskPhase::Evaluation // Evaluate results
+                } else {
+                    TaskPhase::Completion // Nothing executed, we're done
+                }
+            }
+            TaskPhase::Evaluation => {
+                if had_errors {
+                    TaskPhase::Planning // Replan to fix errors
+                } else {
+                    TaskPhase::Completion // Success, complete the task
+                }
+            }
+            TaskPhase::Completion => TaskPhase::Completion, // Stay in completion
+        }
+    }
+}
 
 pub struct Shell {
     ai_client: AiClient,
     tool_executor: ToolExecutor,
     config: Config,
+    task_state: Option<TaskState>,
 }
 
 impl Shell {
@@ -74,33 +151,48 @@ Always be helpful, professional, and focused on empowering the user's developmen
             ai_client,
             tool_executor: ToolExecutor::new(),
             config,
+            task_state: None,
         })
     }
     
     pub async fn process_prompt(&mut self, prompt: &str) -> Result<()> {
         info!("Processing prompt: {}", prompt);
         
-        // Implement agentic loop for non-interactive mode
-        let mut first_iteration = true;
+        // Initialize task state
+        let mut task_state = TaskState::new(prompt);
         
-        loop {
-            let mut stream = if first_iteration {
-                first_iteration = false;
-                self.ai_client.chat_stream(prompt).await?
+        // Classify initial request complexity
+        let initial_phase = self.ai_client.classify_request_complexity(prompt);
+        task_state.change_phase(initial_phase);
+        
+        // Set appropriate model for initial phase
+        self.ai_client.set_task_phase(initial_phase).await?;
+        
+        // Orchestrated agent loop
+        while task_state.should_continue() {
+            info!("Starting iteration {} in {:?} phase using {:?} model", 
+                  task_state.iteration_count + 1, 
+                  task_state.phase,
+                  self.ai_client.get_model_state().current_model);
+            
+            let input = if task_state.iteration_count == 0 {
+                prompt
             } else {
-                // Continue conversation after tool execution
-                self.ai_client.chat_stream("").await?
+                "" // Continue conversation
             };
             
-            let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
-            let mut ai_response = String::new(); // Accumulate AI response (excluding thinking and tool calls)
-            let mut tools_executed = false;
+            let mut stream = self.ai_client.chat_stream(input).await?;
+            let mut ai_response = String::new();
+            let mut thinking_display_buffer = String::new();
+            let mut had_tool_calls = false;
+            let mut had_errors = false;
             
+            // Process streaming response
             while let Some(event) = stream.recv().await {
                 match event {
                     StreamEvent::Text(text) => {
                         print!("{}", text);
-                        ai_response.push_str(&text); // Accumulate for conversation history
+                        ai_response.push_str(&text);
                         io::Write::flush(&mut io::stdout())?;
                     }
                     StreamEvent::Think(thinking) => {
@@ -114,10 +206,9 @@ Always be helpful, professional, and focused on empowering the user's developmen
                     StreamEvent::ThinkPartial(partial) => {
                         thinking_display_buffer.push_str(&partial);
                         
-                        // Lookahead buffer approach: only flush content we're confident is safe
+                        // Lookahead buffer approach for safe streaming
                         const LOOKAHEAD_SIZE: usize = 20;
                         if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
-                            // Find safe Unicode boundary for splitting
                             let target_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
                             let safe_len = thinking_display_buffer.char_indices()
                                 .map(|(i, _)| i)
@@ -129,16 +220,14 @@ Always be helpful, professional, and focused on empowering the user's developmen
                                 let safe_content = &thinking_display_buffer[..safe_len];
                                 let lookahead_content = &thinking_display_buffer[safe_len..];
                                 
-                                // Only flush if safe content doesn't contain incomplete tags
                                 let is_safe = if safe_content.contains('<') {
                                     safe_content.rfind('<').map_or(true, |pos| {
-                                        safe_content[pos..].contains('>') // Complete tag in safe content
+                                        safe_content[pos..].contains('>')
                                     })
                                 } else {
-                                    true // No < characters, safe to flush
+                                    true
                                 };
                                 
-                                // Also check lookahead for partial closing tags like "</thin"
                                 let no_partial_closing_tag = !lookahead_content.starts_with("</") || 
                                     lookahead_content.contains(">");
                                 
@@ -151,9 +240,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
                         }
                     }
                     StreamEvent::ThinkEnd => {
-                        // With lookahead buffer, clean up remaining content
                         if !thinking_display_buffer.is_empty() {
-                            // Remove any closing tag and flush remaining safe content
                             let clean_content = thinking_display_buffer.replace("</think>", "");
                             if !clean_content.is_empty() {
                                 print!("\x1b[2;37m{}", clean_content);
@@ -164,9 +251,12 @@ Always be helpful, professional, and focused on empowering the user's developmen
                         io::Write::flush(&mut io::stdout())?;
                     }
                     StreamEvent::ToolCall(tool_call) => {
-                        println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90mwith args:\x1b[0m \x1b[37m{}\x1b[0m", tool_call.name, tool_call.args);
+                        println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90m({}:{})\x1b[0m \x1b[37m{}\x1b[0m", 
+                                tool_call.name, 
+                                self.ai_client.get_model_state().current_model.model_name(),
+                                task_state.phase as u8,
+                                tool_call.args);
                         
-                        // Use proper tool argument preparation
                         let args = self.prepare_tool_args(&tool_call);
                         
                         match self.tool_executor.execute_tool(&tool_call.name, &args).await {
@@ -174,21 +264,21 @@ Always be helpful, professional, and focused on empowering the user's developmen
                                 let cleaned_result = Self::strip_ansi_codes(&result);
                                 self.display_tool_output(&cleaned_result);
                                 self.ai_client.add_tool_result(&tool_call.name, &result);
-                                
-                                // Set flag to continue agentic loop
-                                tools_executed = true;
+                                task_state.record_tool_execution();
+                                had_tool_calls = true;
                             }
                             Err(e) => {
                                 eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
                                 self.ai_client.add_tool_result(&tool_call.name, &format!("Tool execution failed: {}", e));
+                                had_errors = true;
                             }
                         }
                     }
                     StreamEvent::Error(error) => {
                         eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
+                        had_errors = true;
                     }
                     StreamEvent::Done => {
-                        // Add AI response to conversation history (excluding thinking and tool calls)
                         if !ai_response.trim().is_empty() {
                             self.ai_client.add_assistant_message(&ai_response);
                         }
@@ -197,11 +287,32 @@ Always be helpful, professional, and focused on empowering the user's developmen
                 }
             }
             
-            // Continue agentic loop if tools were executed
-            if !tools_executed {
-                break; // No tools executed, exit the loop
+            // Determine next phase based on results
+            let next_phase = task_state.determine_next_phase(had_tool_calls, had_errors);
+            
+            // Check if we're done
+            if next_phase == TaskPhase::Completion && task_state.phase == TaskPhase::Completion {
+                info!("Task completed after {} iterations with {} tools executed", 
+                      task_state.iteration_count + 1, task_state.total_tools_executed);
+                break;
             }
-            // If tools were executed, continue the loop to call AI again
+            
+            // Switch model if phase changed
+            if next_phase != task_state.phase {
+                task_state.change_phase(next_phase);
+                self.ai_client.set_task_phase(next_phase).await?;
+            }
+            
+            task_state.advance_iteration();
+            
+            // If no tools were executed and no errors, we're likely done
+            if !had_tool_calls && !had_errors && task_state.tools_executed_this_iteration == 0 {
+                break;
+            }
+        }
+        
+        if !task_state.should_continue() {
+            println!("\n\x1b[1;33mTask terminated after maximum iterations ({})\x1b[0m", task_state.max_iterations);
         }
         
         println!();
@@ -322,143 +433,171 @@ Always be helpful, professional, and focused on empowering the user's developmen
                 }
             }
         } else {
-            // Process with AI - agentic loop for tool chaining
-            let mut first_iteration = true;
+            // Process with AI using orchestrated agent loop
+            self.process_orchestrated_interaction(&sanitized_input).await?;
+        }
+        
+        Ok(())
+    }
+    
+    async fn process_orchestrated_interaction(&mut self, input: &str) -> Result<()> {
+        use std::io::{self, Write};
+        
+        // Initialize task state for this interaction
+        let mut task_state = TaskState::new(input);
+        
+        // Classify initial request complexity  
+        let initial_phase = self.ai_client.classify_request_complexity(input);
+        task_state.change_phase(initial_phase);
+        
+        // Set appropriate model for initial phase
+        self.ai_client.set_task_phase(initial_phase).await?;
+        
+        // Orchestrated agent loop for interactive mode
+        while task_state.should_continue() {
+            debug!("Interactive iteration {} in {:?} phase using {:?} model", 
+                   task_state.iteration_count + 1, 
+                   task_state.phase,
+                   self.ai_client.get_model_state().current_model);
             
-            loop {
-                let mut stream = if first_iteration {
-                    first_iteration = false;
-                    self.ai_client.chat_stream(&sanitized_input).await?
-                } else {
-                    // Continue conversation after tool execution
-                    self.ai_client.chat_stream("").await?
-                };
-                
-                let mut ai_response = String::new(); // Accumulate AI response (excluding thinking)
-                let mut thinking_buffer = String::new(); // Buffer for cleaning thinking content
-                let mut thinking_display_buffer = String::new(); // Lookahead buffer for thinking display
-                let mut in_thinking = false;
-                let mut tools_executed = false;
+            let prompt = if task_state.iteration_count == 0 {
+                input
+            } else {
+                "" // Continue conversation
+            };
             
-                while let Some(event) = stream.recv().await {
-                    match event {
-                        crate::ai::StreamEvent::Text(text) => {
-                            print!("{}", text);
-                            ai_response.push_str(&text); // Accumulate for conversation history
-                            io::stdout().flush()?;
-                        }
-                        crate::ai::StreamEvent::Think(thinking) => {
-                            println!("\n\x1b[2;37m{}\x1b[0m", thinking);
-                            io::stdout().flush()?;
-                        }
-                        crate::ai::StreamEvent::ThinkStart => {
-                            print!("\n\x1b[2;37m");
-                            thinking_buffer.clear();
-                            thinking_display_buffer.clear();
-                            in_thinking = true;
-                            io::stdout().flush()?;
-                        }
-                        crate::ai::StreamEvent::ThinkPartial(partial) => {
-                            // Add to both buffers
-                            thinking_buffer.push_str(&partial);
-                            thinking_display_buffer.push_str(&partial);
+            let mut stream = self.ai_client.chat_stream(prompt).await?;
+            let mut ai_response = String::new();
+            let mut thinking_display_buffer = String::new();
+            let mut had_tool_calls = false;
+            let mut had_errors = false;
+            
+            // Process streaming response
+            while let Some(event) = stream.recv().await {
+                match event {
+                    StreamEvent::Text(text) => {
+                        print!("{}", text);
+                        ai_response.push_str(&text);
+                        io::stdout().flush()?;
+                    }
+                    StreamEvent::Think(thinking) => {
+                        println!("\n\x1b[2;37m{}\x1b[0m", thinking);
+                    }
+                    StreamEvent::ThinkStart => {
+                        thinking_display_buffer.clear();
+                        print!("\n\x1b[2;37m");
+                        io::stdout().flush()?;
+                    }
+                    StreamEvent::ThinkPartial(partial) => {
+                        thinking_display_buffer.push_str(&partial);
+                        
+                        // Lookahead buffer approach for safe streaming
+                        const LOOKAHEAD_SIZE: usize = 20;
+                        if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
+                            let target_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
+                            let safe_len = thinking_display_buffer.char_indices()
+                                .map(|(i, _)| i)
+                                .take_while(|&i| i <= target_len)
+                                .last()
+                                .unwrap_or(0);
                             
-                            // Lookahead buffer approach: only flush content we're confident is safe
-                            const LOOKAHEAD_SIZE: usize = 20;
-                            if thinking_display_buffer.len() > LOOKAHEAD_SIZE {
-                                // Find safe Unicode boundary for splitting
-                                let target_len = thinking_display_buffer.len() - LOOKAHEAD_SIZE;
-                                let safe_len = thinking_display_buffer.char_indices()
-                                    .map(|(i, _)| i)
-                                    .take_while(|&i| i <= target_len)
-                                    .last()
-                                    .unwrap_or(0);
+                            if safe_len > 0 {
+                                let safe_content = &thinking_display_buffer[..safe_len];
+                                let lookahead_content = &thinking_display_buffer[safe_len..];
                                 
-                                if safe_len > 0 {
-                                    let safe_content = &thinking_display_buffer[..safe_len];
-                                    let lookahead_content = &thinking_display_buffer[safe_len..];
-                                    
-                                    // Only flush if safe content doesn't contain incomplete tags
-                                    let is_safe = if safe_content.contains('<') {
-                                        // Check if all < characters have matching > characters
-                                        safe_content.rfind('<').map_or(true, |pos| {
-                                            safe_content[pos..].contains('>') // Complete tag in safe content
-                                        })
-                                    } else {
-                                        true // No < characters, safe to flush
-                                    };
-                                    
-                                    // Also check lookahead for partial closing tags like "</thin"
-                                    let no_partial_closing_tag = !lookahead_content.starts_with("</") || 
-                                        lookahead_content.contains(">");
-                                    
-                                    if is_safe && no_partial_closing_tag {
-                                        print!("\x1b[2;37m{}", safe_content);
-                                        io::stdout().flush()?;
-                                        thinking_display_buffer.drain(..safe_len);
-                                    }
+                                let is_safe = if safe_content.contains('<') {
+                                    safe_content.rfind('<').map_or(true, |pos| {
+                                        safe_content[pos..].contains('>')
+                                    })
+                                } else {
+                                    true
+                                };
+                                
+                                let no_partial_closing_tag = !lookahead_content.starts_with("</") || 
+                                    lookahead_content.contains(">");
+                                
+                                if is_safe && no_partial_closing_tag {
+                                    print!("\x1b[2;37m{}", safe_content);
+                                    io::stdout().flush()?;
+                                    thinking_display_buffer.drain(..safe_len);
                                 }
                             }
-                        }
-                        crate::ai::StreamEvent::ThinkEnd => {
-                            // With lookahead buffer, clean up remaining content
-                            if !thinking_display_buffer.is_empty() {
-                                // Remove any closing tag and flush remaining safe content
-                                let clean_content = thinking_display_buffer.replace("</think>", "");
-                                if !clean_content.is_empty() {
-                                    print!("\x1b[2;37m{}", clean_content);
-                                }
-                            }
-                            // End thinking mode and reset formatting
-                            print!("\x1b[0m\n");
-                            thinking_buffer.clear();
-                            thinking_display_buffer.clear();
-                            in_thinking = false;
-                            io::stdout().flush()?;
-                        }
-                        crate::ai::StreamEvent::ToolCall(tool_call) => {
-                            debug!("Tool call parsed: {} with args: {}", tool_call.name, tool_call.args);
-                            println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90mwith args:\x1b[0m \x1b[37m{}\x1b[0m", tool_call.name, tool_call.args);
-                            
-                            // Execute the tool
-                            let args = self.prepare_tool_args(&tool_call);
-                            
-                            match self.tool_executor.execute_tool(&tool_call.name, &args).await {
-                                Ok(result) => {
-                                    let cleaned_result = Self::strip_ansi_codes(&result);
-                                    self.display_tool_output(&cleaned_result);
-                                    self.ai_client.add_tool_result(&tool_call.name, &result);
-                                    
-                                    // Set flag to continue agentic loop
-                                    tools_executed = true;
-                                }
-                                Err(e) => {
-                                    eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
-                                }
-                            }
-                        }
-                        crate::ai::StreamEvent::Error(error) => {
-                            eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
-                        }
-                        crate::ai::StreamEvent::Done => {
-                            // Add AI response to conversation history (excluding thinking and tool calls)
-                            if !ai_response.trim().is_empty() {
-                                self.ai_client.add_assistant_message(&ai_response);
-                            }
-                            break;
                         }
                     }
+                    StreamEvent::ThinkEnd => {
+                        if !thinking_display_buffer.is_empty() {
+                            let clean_content = thinking_display_buffer.replace("</think>", "");
+                            if !clean_content.is_empty() {
+                                print!("\x1b[2;37m{}", clean_content);
+                            }
+                        }
+                        print!("\x1b[0m\n");
+                        thinking_display_buffer.clear();
+                        io::stdout().flush()?;
+                    }
+                    StreamEvent::ToolCall(tool_call) => {
+                        println!("\n\x1b[33mExecuting\x1b[0m \x1b[1;36m{}\x1b[0m \x1b[90m({}:{}):\x1b[0m \x1b[37m{}\x1b[0m", 
+                                tool_call.name, 
+                                self.ai_client.get_model_state().current_model.model_name(),
+                                task_state.phase as u8,
+                                tool_call.args);
+                        
+                        let args = self.prepare_tool_args(&tool_call);
+                        
+                        match self.tool_executor.execute_tool(&tool_call.name, &args).await {
+                            Ok(result) => {
+                                let cleaned_result = Self::strip_ansi_codes(&result);
+                                self.display_tool_output(&cleaned_result);
+                                self.ai_client.add_tool_result(&tool_call.name, &result);
+                                task_state.record_tool_execution();
+                                had_tool_calls = true;
+                            }
+                            Err(e) => {
+                                eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
+                                self.ai_client.add_tool_result(&tool_call.name, &format!("Tool execution failed: {}", e));
+                                had_errors = true;
+                            }
+                        }
+                    }
+                    StreamEvent::Error(error) => {
+                        eprintln!("\n\x1b[1;31mError:\x1b[0m {}", error);
+                        had_errors = true;
+                    }
+                    StreamEvent::Done => {
+                        if !ai_response.trim().is_empty() {
+                            self.ai_client.add_assistant_message(&ai_response);
+                        }
+                        break;
+                    }
                 }
-                
-                // Continue agentic loop if tools were executed
-                if !tools_executed {
-                    debug!("No tools executed, exiting agentic loop");
-                    break; // No tools executed, exit the loop
-                } else {
-                    debug!("Tools were executed, continuing agentic loop with empty prompt");
-                }
-                // If tools were executed, continue the loop to call AI again
             }
+            
+            // Determine next phase based on results
+            let next_phase = task_state.determine_next_phase(had_tool_calls, had_errors);
+            
+            // Check if we're done
+            if next_phase == TaskPhase::Completion && task_state.phase == TaskPhase::Completion {
+                debug!("Interactive task completed after {} iterations with {} tools executed", 
+                       task_state.iteration_count + 1, task_state.total_tools_executed);
+                break;
+            }
+            
+            // Switch model if phase changed
+            if next_phase != task_state.phase {
+                task_state.change_phase(next_phase);
+                self.ai_client.set_task_phase(next_phase).await?;
+            }
+            
+            task_state.advance_iteration();
+            
+            // If no tools were executed and no errors, we're likely done
+            if !had_tool_calls && !had_errors && task_state.tools_executed_this_iteration == 0 {
+                break;
+            }
+        }
+        
+        if !task_state.should_continue() {
+            println!("\n\x1b[1;33mTask terminated after maximum iterations ({})\x1b[0m", task_state.max_iterations);
         }
         
         Ok(())

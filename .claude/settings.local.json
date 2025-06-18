@@ -6,7 +6,8 @@
       "Bash(chmod:*)",
       "Bash(rg:*)",
       "Bash(cargo test:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(ollama create:*)"
     ],
     "deny": []
   }
