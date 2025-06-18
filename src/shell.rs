@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, Context};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton},
     execute,
@@ -100,6 +100,7 @@ pub struct Shell {
     tool_executor: ToolExecutor,
     config: Config,
     task_state: Option<TaskState>,
+    recent_commands: Vec<String>,
 }
 
 impl Shell {
@@ -152,6 +153,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
             tool_executor: ToolExecutor::new(),
             config,
             task_state: None,
+            recent_commands: Vec::new(),
         })
     }
     
@@ -257,9 +259,23 @@ Always be helpful, professional, and focused on empowering the user's developmen
                                 task_state.phase as u8,
                                 tool_call.args);
                         
-                        let args = self.prepare_tool_args(&tool_call);
+                        // Check for command repetition
+                        let command_key = format!("{}:{}", tool_call.name, tool_call.args);
+                        if self.recent_commands.contains(&command_key) {
+                            println!("\x1b[1;33m⚠️  Warning: Repeating recent command. Consider trying a different approach.\x1b[0m");
+                            // Add a warning to the AI about repetition
+                            let warning_msg = format!("WARNING: You are repeating the command '{}' with args '{}'. This suggests you may be stuck in a loop. Please try a different approach or explain why you need to repeat this command.", tool_call.name, tool_call.args);
+                            self.ai_client.add_tool_result("system_warning", &warning_msg);
+                        }
                         
-                        match self.tool_executor.execute_tool(&tool_call.name, &args).await {
+                        // Track this command (keep only last 5 commands)
+                        self.recent_commands.push(command_key);
+                        if self.recent_commands.len() > 5 {
+                            self.recent_commands.remove(0);
+                        }
+                        
+                        // Use the new argument parsing system
+                        match self.tool_executor.execute_tool_with_raw_args(&tool_call.name, &tool_call.args).await {
                             Ok(result) => {
                                 let cleaned_result = Self::strip_ansi_codes(&result);
                                 self.display_tool_output(&cleaned_result);
@@ -268,8 +284,15 @@ Always be helpful, professional, and focused on empowering the user's developmen
                                 had_tool_calls = true;
                             }
                             Err(e) => {
-                                eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", e);
-                                self.ai_client.add_tool_result(&tool_call.name, &format!("Tool execution failed: {}", e));
+                                // Enhanced error reporting with context
+                                let error_msg = format!("Tool '{}' failed with args '{}': {}", 
+                                                       tool_call.name, tool_call.args, e);
+                                eprintln!("\x1b[1;31mTool execution failed:\x1b[0m {}", error_msg);
+                                
+                                // Provide helpful error context to the AI
+                                let context_msg = format!("Error executing tool '{}' with arguments '{}': {}. Please check the arguments format and try again.", 
+                                                         tool_call.name, tool_call.args, e);
+                                self.ai_client.add_tool_result(&tool_call.name, &context_msg);
                                 had_errors = true;
                             }
                         }
@@ -542,9 +565,8 @@ Always be helpful, professional, and focused on empowering the user's developmen
                                 task_state.phase as u8,
                                 tool_call.args);
                         
-                        let args = self.prepare_tool_args(&tool_call);
-                        
-                        match self.tool_executor.execute_tool(&tool_call.name, &args).await {
+                        // Use the new argument parsing system
+                        match self.tool_executor.execute_tool_with_raw_args(&tool_call.name, &tool_call.args).await {
                             Ok(result) => {
                                 let cleaned_result = Self::strip_ansi_codes(&result);
                                 self.display_tool_output(&cleaned_result);
@@ -603,7 +625,28 @@ Always be helpful, professional, and focused on empowering the user's developmen
         Ok(())
     }
     
-    fn prepare_tool_args(&self, tool_call: &crate::ai::ToolCall) -> serde_json::Value {
+    /// Prepare tool arguments from raw tool call data.
+    /// 
+    /// This method supports both JSON and plain text (XML) argument formats:
+    /// 
+    /// **JSON Format (preferred):**
+    /// - `{"command": "ls -la"}` for shell_command
+    /// - `{"path": "file.txt", "content": "Hello"}` for write_file
+    /// - `{"path": "file.txt"}` for read_file
+    /// - `{"command": "status"}` for git_command
+    /// - `{"path": "file.rs"}` for code_analysis
+    /// - `{}` for debug_directory
+    /// 
+    /// **Plain Text Format (XML/legacy):**
+    /// - `ls -la` for shell_command
+    /// - `file.txt\nHello World` for write_file (newline-separated)
+    /// - `file.txt|Hello World` for write_file (pipe-separated)
+    /// - `file.txt Hello World` for write_file (space-separated)
+    /// - `file.txt` for read_file
+    /// - `status` for git_command
+    /// - `file.rs` for code_analysis
+    /// - (empty) for debug_directory
+    pub fn prepare_tool_args(&self, tool_call: &crate::ai::ToolCall) -> serde_json::Value {
         // First, try to parse the args as JSON
         if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&tool_call.args) {
             // If it's already valid JSON, check if it has the expected structure for this tool
@@ -633,6 +676,10 @@ Always be helpful, professional, and focused on empowering the user's developmen
                         return parsed_json;
                     }
                 }
+                "debug_directory" => {
+                    // debug_directory doesn't require specific arguments, accept any JSON
+                    return parsed_json;
+                }
                 _ => {
                     // For unknown tools, accept any valid JSON
                     return parsed_json;
@@ -640,46 +687,72 @@ Always be helpful, professional, and focused on empowering the user's developmen
             }
         }
 
-        // Fallback to legacy string-based parsing for backward compatibility
+        // Fallback to string-based parsing for pure XML/text arguments
         match tool_call.name.as_str() {
             "shell_command" => {
                 serde_json::json!({
-                    "command": tool_call.args
+                    "command": tool_call.args.trim()
                 })
             }
             "write_file" => {
-                // Parse args for file writing
-                let parts: Vec<&str> = tool_call.args.splitn(2, '\n').collect();
-                if parts.len() >= 2 {
+                // Enhanced parsing for write_file - support multiple formats:
+                // Format 1: "path\ncontent" (legacy)
+                // Format 2: "path|content" (alternative delimiter)
+                // Format 3: "path content" (space-separated, content is rest)
+                let args = tool_call.args.trim();
+                
+                if let Some(newline_pos) = args.find('\n') {
+                    // Format 1: newline-separated
+                    let (path, content) = args.split_at(newline_pos);
                     serde_json::json!({
-                        "path": parts[0],
-                        "content": parts[1]
+                        "path": path.trim(),
+                        "content": content[1..].to_string() // Skip the newline
+                    })
+                } else if let Some(pipe_pos) = args.find('|') {
+                    // Format 2: pipe-separated
+                    let (path, content) = args.split_at(pipe_pos);
+                    serde_json::json!({
+                        "path": path.trim(),
+                        "content": content[1..].trim() // Skip the pipe
+                    })
+                } else if let Some(space_pos) = args.find(' ') {
+                    // Format 3: space-separated (path is first word, content is rest)
+                    let (path, content) = args.split_at(space_pos);
+                    serde_json::json!({
+                        "path": path.trim(),
+                        "content": content.trim_start() // Remove leading whitespace
                     })
                 } else {
+                    // Just a path, empty content
                     serde_json::json!({
-                        "path": tool_call.args,
+                        "path": args,
                         "content": ""
                     })
                 }
             }
             "read_file" => {
                 serde_json::json!({
-                    "path": tool_call.args
+                    "path": tool_call.args.trim()
                 })
             }
             "git_command" => {
                 serde_json::json!({
-                    "command": tool_call.args
+                    "command": tool_call.args.trim()
                 })
             }
             "code_analysis" => {
                 serde_json::json!({
-                    "path": tool_call.args
+                    "path": tool_call.args.trim()
                 })
             }
+            "debug_directory" => {
+                // debug_directory doesn't need specific args, pass empty object
+                serde_json::json!({})
+            }
             _ => {
+                // For unknown tools, wrap the string args in a generic structure
                 serde_json::json!({
-                    "args": tool_call.args
+                    "args": tool_call.args.trim()
                 })
             }
         }
@@ -1365,50 +1438,10 @@ impl ShellApp {
     }
     
     async fn execute_tool_call(&mut self, tool_call: &ToolCall) -> Result<String> {
-        let args = match tool_call.name.as_str() {
-            "shell_command" => {
-                serde_json::json!({
-                    "command": tool_call.args
-                })
-            }
-            "write_file" => {
-                // Parse args for file writing
-                let parts: Vec<&str> = tool_call.args.splitn(2, '\n').collect();
-                if parts.len() >= 2 {
-                    serde_json::json!({
-                        "path": parts[0],
-                        "content": parts[1]
-                    })
-                } else {
-                    serde_json::json!({
-                        "path": tool_call.args,
-                        "content": ""
-                    })
-                }
-            }
-            "read_file" => {
-                serde_json::json!({
-                    "path": tool_call.args
-                })
-            }
-            "git_command" => {
-                serde_json::json!({
-                    "command": tool_call.args
-                })
-            }
-            "code_analysis" => {
-                serde_json::json!({
-                    "path": tool_call.args
-                })
-            }
-            _ => {
-                serde_json::json!({
-                    "args": tool_call.args
-                })
-            }
-        };
-        
-        self.tool_executor.execute_tool(&tool_call.name, &args).await
+        // Use the new argument parsing system with enhanced error handling
+        self.tool_executor.execute_tool_with_raw_args(&tool_call.name, &tool_call.args).await
+            .with_context(|| format!("Failed to execute tool '{}' with arguments '{}'", 
+                                    tool_call.name, tool_call.args))
     }
 }
 
@@ -1753,6 +1786,148 @@ mod tests {
                 let result = shell.prepare_tool_args(&tool_call);
                 assert_eq!(result, expected, "Failed fallback for tool: {}", tool_name);
             }
+        });
+    }
+
+    #[test]
+    fn test_prepare_tool_args_json_format() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let shell = create_test_shell().await;
+            
+            // Test JSON format for all tools
+            let json_test_cases = vec![
+                (
+                    "shell_command",
+                    r#"{"command": "ls -la"}"#,
+                    json!({"command": "ls -la"})
+                ),
+                (
+                    "read_file",
+                    r#"{"path": "src/main.rs"}"#,
+                    json!({"path": "src/main.rs"})
+                ),
+                (
+                    "write_file",
+                    r#"{"path": "test.txt", "content": "Hello World"}"#,
+                    json!({"path": "test.txt", "content": "Hello World"})
+                ),
+                (
+                    "git_command",
+                    r#"{"command": "status"}"#,
+                    json!({"command": "status"})
+                ),
+                (
+                    "code_analysis",
+                    r#"{"path": "src/lib.rs"}"#,
+                    json!({"path": "src/lib.rs"})
+                ),
+                (
+                    "debug_directory",
+                    r#"{}"#,
+                    json!({})
+                ),
+                (
+                    "unknown_tool",
+                    r#"{"custom": "value"}"#,
+                    json!({"custom": "value"})
+                ),
+            ];
+            
+            for (tool_name, json_args, expected) in json_test_cases {
+                let tool_call = ToolCall {
+                    name: tool_name.to_string(),
+                    args: json_args.to_string(),
+                };
+                let result = shell.prepare_tool_args(&tool_call);
+                assert_eq!(result, expected, "Failed JSON format for tool: {}", tool_name);
+            }
+        });
+    }
+
+    #[test]
+    fn test_prepare_tool_args_write_file_enhanced_formats() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let shell = create_test_shell().await;
+            
+            // Test all supported write_file formats
+            let write_file_formats = vec![
+                // Newline-separated (legacy)
+                ("test.txt\nHello World", "test.txt", "Hello World"),
+                // Pipe-separated (new)
+                ("test.txt|Hello World", "test.txt", "Hello World"),
+                // Space-separated (new) 
+                ("test.txt Hello World", "test.txt", "Hello World"),
+                // Path only
+                ("test.txt", "test.txt", ""),
+                // Complex content with newlines
+                ("config.toml\n[server]\nport = 8080", "config.toml", "[server]\nport = 8080"),
+            ];
+            
+            for (args_str, expected_path, expected_content) in write_file_formats {
+                let tool_call = ToolCall {
+                    name: "write_file".to_string(),
+                    args: args_str.to_string(),
+                };
+                let result = shell.prepare_tool_args(&tool_call);
+                
+                assert_eq!(
+                    result.get("path").unwrap().as_str().unwrap(), 
+                    expected_path,
+                    "Path mismatch for input: {}", args_str
+                );
+                assert_eq!(
+                    result.get("content").unwrap().as_str().unwrap(), 
+                    expected_content,
+                    "Content mismatch for input: {}", args_str
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn test_new_tool_args_parsing() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut tool_executor = ToolExecutor::new();
+            
+            // Create a test file for read_file tests
+            std::fs::write("test.txt", "test content").expect("Failed to create test file");
+            
+            // Test new argument parsing with various inputs
+            let test_cases = vec![
+                // Valid JSON
+                ("shell_command", r#"{"command": "ls -la"}"#, true),
+                ("read_file", r#"{"path": "test.txt"}"#, true),
+                ("write_file", r#"{"path": "test_write.txt", "content": "hello"}"#, true),
+                ("write_file", r#"{"path": "test_write2.txt"}"#, true), // Missing content should work with default
+                
+                // Plain text
+                ("shell_command", "ls -la", true),
+                ("read_file", "test.txt", true),
+                ("write_file", "test_write3.txt\nhello world", true),
+                
+                // Invalid JSON should fall back to text parsing
+                ("shell_command", r#"{"invalid": json"#, true), // Invalid JSON, should parse as text
+                ("read_file", r#"{"wrong_key": "value"}"#, false), // Wrong structure, falls back to text but path doesn't exist
+            ];
+            
+            for (tool_name, args_str, should_succeed) in test_cases {
+                let result = tool_executor.execute_tool_with_raw_args(tool_name, args_str).await;
+                
+                if should_succeed {
+                    if let Err(ref e) = result {
+                        println!("Error for {} with args {}: {:?}", tool_name, args_str, e);
+                    }
+                    assert!(result.is_ok(), "Failed to parse {} with args: {}", tool_name, args_str);
+                } else {
+                    assert!(result.is_err(), "Expected failure for {} with args: {}", tool_name, args_str);
+                }
+            }
+            
+            // Clean up test files
+            let _ = std::fs::remove_file("test.txt");
+            let _ = std::fs::remove_file("test_write.txt");
+            let _ = std::fs::remove_file("test_write2.txt");
+            let _ = std::fs::remove_file("test_write3.txt");
         });
     }
 

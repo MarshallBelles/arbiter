@@ -9,6 +9,7 @@ mod ai;
 mod tree_sitter_support;
 mod lsp;
 mod tools;
+mod tool_args;
 
 use config::Config;
 use shell::Shell;

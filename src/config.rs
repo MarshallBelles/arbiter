@@ -176,7 +176,9 @@ impl Config {
             let config_str =
                 std::fs::read_to_string(&config_path).context("Could not read config file")?;
 
-            toml::from_str(&config_str).context("Could not parse config file")
+            toml::from_str(&config_str).with_context(|| {
+                format!("Could not parse config file at: {}\nYou can edit this file manually with vim to fix any syntax issues", config_path.display())
+            })
         } else {
             // Create default config
             let default_config = Self::default();
@@ -376,7 +378,9 @@ mod tests {
         // Should return an error
         let result = Config::load(Some(config_path.to_str().unwrap()));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Could not parse config file"));
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Could not parse config file at:"));
+        assert!(error_msg.contains("vim to fix any syntax issues"));
     }
 
     #[test]

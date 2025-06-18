@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use std::io::Write;
 use tokio::process::Command as TokioCommand;
 use tracing::{debug, error, info};
+use crate::tool_args::*;
 
 #[derive(Clone)]
 pub struct ToolExecutor {
@@ -17,22 +18,58 @@ impl ToolExecutor {
         }
     }
     
-    pub async fn execute_tool(&mut self, tool_name: &str, args: &Value) -> Result<String> {
+    /// Execute a tool with raw string arguments (supports both JSON and text formats)
+    pub async fn execute_tool_with_raw_args(&mut self, tool_name: &str, raw_args: &str) -> Result<String> {
         match tool_name {
-            "shell_command" => self.execute_shell_command(args).await,
-            "write_file" => self.write_file(args).await,
-            "read_file" => self.read_file(args).await,
-            "git_command" => self.execute_git_command(args).await,
-            "code_analysis" => self.analyze_code(args).await,
-            "debug_directory" => self.debug_directory(args).await,
+            "shell_command" => {
+                let parsed_args = ShellCommandArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse shell_command arguments: {}", raw_args))?;
+                self.execute_shell_command_typed(parsed_args).await
+            }
+            "write_file" => {
+                let parsed_args = WriteFileArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse write_file arguments: {}", raw_args))?;
+                self.write_file_typed(parsed_args).await
+            }
+            "read_file" => {
+                let parsed_args = ReadFileArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse read_file arguments: {}", raw_args))?;
+                self.read_file_typed(parsed_args).await
+            }
+            "git_command" => {
+                let parsed_args = GitCommandArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse git_command arguments: {}", raw_args))?;
+                self.execute_git_command_typed(parsed_args).await
+            }
+            "code_analysis" => {
+                let parsed_args = CodeAnalysisArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse code_analysis arguments: {}", raw_args))?;
+                self.analyze_code_typed(parsed_args).await
+            }
+            "debug_directory" => {
+                let parsed_args = DebugDirectoryArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse debug_directory arguments: {}", raw_args))?;
+                self.debug_directory_typed(parsed_args).await
+            }
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         }
     }
+
+    /// Legacy method for backward compatibility with Value arguments
+    pub async fn execute_tool(&mut self, tool_name: &str, args: &Value) -> Result<String> {
+        // For backward compatibility, we still receive Value but extract the raw string
+        let raw_args = if let Some(args_str) = args.as_str() {
+            args_str
+        } else {
+            // If it's already a JSON object, serialize it back to string for parsing
+            &args.to_string()
+        };
+
+        self.execute_tool_with_raw_args(tool_name, raw_args).await
+    }
     
-    async fn execute_shell_command(&mut self, args: &Value) -> Result<String> {
-        let command = args.get("command")
-            .and_then(|v| v.as_str())
-            .context("Missing 'command' argument")?;
+    async fn execute_shell_command_typed(&mut self, args: ShellCommandArgs) -> Result<String> {
+        let command = &args.command;
         
         info!("Executing shell command: {}", command);
         
@@ -90,6 +127,173 @@ impl ToolExecutor {
         
         debug!("Shell command result: {}", result);
         Ok(result)
+    }
+    
+    async fn write_file_typed(&mut self, args: WriteFileArgs) -> Result<String> {
+        let path = &args.path;
+        let content = &args.content;
+        
+        let full_path = self.working_directory.join(path);
+        
+        // Create parent directories if they don't exist
+        if let Some(parent) = full_path.parent() {
+            tokio::fs::create_dir_all(parent).await
+                .context("Failed to create parent directories")?;
+        }
+        
+        tokio::fs::write(&full_path, content).await
+            .context("Failed to write file")?;
+        
+        info!("Written file: {}", full_path.display());
+        Ok(format!("Successfully wrote {} bytes to {}", content.len(), path))
+    }
+    
+    async fn read_file_typed(&mut self, args: ReadFileArgs) -> Result<String> {
+        let path = &args.path;
+        
+        let full_path = self.working_directory.join(path);
+        
+        info!("Attempting to read file: {} (full path: {})", path, full_path.display());
+        info!("Working directory: {}", self.working_directory.display());
+        
+        // Check if file exists first
+        if !full_path.exists() {
+            return Err(anyhow::anyhow!(
+                "File does not exist: {} (full path: {})", 
+                path, full_path.display()
+            ));
+        }
+        
+        // Check if it's actually a file
+        if !full_path.is_file() {
+            return Err(anyhow::anyhow!(
+                "Path exists but is not a file: {} (full path: {})", 
+                path, full_path.display()
+            ));
+        }
+        
+        // Try to read the file with detailed error information
+        let content = tokio::fs::read_to_string(&full_path).await
+            .with_context(|| format!(
+                "Failed to read file: {} (full path: {}). Check file permissions and encoding.", 
+                path, full_path.display()
+            ))?;
+        
+        info!("Successfully read file: {} ({} bytes)", full_path.display(), content.len());
+        Ok(format!("File content of {}:\n{}", path, content))
+    }
+    
+    async fn execute_git_command_typed(&mut self, args: GitCommandArgs) -> Result<String> {
+        let command = &args.command;
+        
+        info!("Executing git command: git {}", command);
+        
+        let parts = shellwords::split(command)
+            .context("Failed to parse git command")?;
+        
+        let output = TokioCommand::new("git")
+            .args(&parts)
+            .current_dir(&self.working_directory)
+            .output()
+            .await
+            .context("Failed to execute git command")?;
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        let result = if output.status.success() {
+            format!("Git command executed successfully:\n{}", stdout)
+        } else {
+            format!("Git command failed (exit code {}):\nSTDOUT:\n{}\nSTDERR:\n{}", 
+                   output.status.code().unwrap_or(-1), stdout, stderr)
+        };
+        
+        debug!("Git command result: {}", result);
+        Ok(result)
+    }
+    
+    async fn analyze_code_typed(&mut self, args: CodeAnalysisArgs) -> Result<String> {
+        let path = &args.path;
+        
+        let full_path = self.working_directory.join(path);
+        
+        let content = tokio::fs::read_to_string(&full_path).await
+            .context("Failed to read file for analysis")?;
+        
+        // Basic code analysis
+        let lines = content.lines().count();
+        let chars = content.chars().count();
+        let words = content.split_whitespace().count();
+        
+        // Detect language
+        let language = crate::tree_sitter_support::TreeSitterManager::new()?
+            .detect_language(path);
+        
+        let mut analysis = format!(
+            "Code analysis for {}:\n- Lines: {}\n- Characters: {}\n- Words: {}\n- Detected language: {}\n",
+            path, lines, chars, words, 
+            language.as_deref().unwrap_or("unknown")
+        );
+        
+        // If we can detect the language, get symbols
+        if let Some(lang) = language {
+            let mut ts_manager = crate::tree_sitter_support::TreeSitterManager::new()?;
+            if let Ok(symbols) = ts_manager.get_symbols(&lang, &content) {
+                analysis.push_str(&format!("\nSymbols found ({}):\n", symbols.len()));
+                for symbol in symbols.iter().take(20) { // Limit to first 20 symbols
+                    analysis.push_str(&format!("- {} ({}): line {}\n", 
+                                             symbol.name, symbol.symbol_type, symbol.start_line + 1));
+                }
+                if symbols.len() > 20 {
+                    analysis.push_str(&format!("... and {} more symbols\n", symbols.len() - 20));
+                }
+            }
+        }
+        
+        info!("Analyzed code file: {}", full_path.display());
+        Ok(analysis)
+    }
+    
+    async fn debug_directory_typed(&mut self, _args: DebugDirectoryArgs) -> Result<String> {
+        let mut debug_info = format!("Debug Directory Information:\n");
+        debug_info.push_str(&format!("Working Directory: {}\n", self.working_directory.display()));
+        debug_info.push_str(&format!("Working Directory Exists: {}\n", self.working_directory.exists()));
+        debug_info.push_str(&format!("Working Directory Is Dir: {}\n", self.working_directory.is_dir()));
+        
+        // Get the actual current working directory from the system
+        match std::env::current_dir() {
+            Ok(current) => {
+                debug_info.push_str(&format!("System Current Dir: {}\n", current.display()));
+                debug_info.push_str(&format!("Directories Match: {}\n", current == self.working_directory));
+            }
+            Err(e) => {
+                debug_info.push_str(&format!("Failed to get system current dir: {}\n", e));
+            }
+        }
+        
+        // List files in the working directory
+        debug_info.push_str("\nFiles in working directory:\n");
+        match tokio::fs::read_dir(&self.working_directory).await {
+            Ok(mut entries) => {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let metadata = entry.metadata().await;
+                    let file_type = match metadata {
+                        Ok(meta) => {
+                            if meta.is_file() { "file" }
+                            else if meta.is_dir() { "dir" }
+                            else { "other" }
+                        }
+                        Err(_) => "unknown"
+                    };
+                    debug_info.push_str(&format!("  {} ({})\n", entry.file_name().to_string_lossy(), file_type));
+                }
+            }
+            Err(e) => {
+                debug_info.push_str(&format!("Failed to read directory: {}\n", e));
+            }
+        }
+        
+        Ok(debug_info)
     }
     
     async fn write_file(&mut self, args: &Value) -> Result<String> {
@@ -501,11 +705,17 @@ mod tests {
     async fn test_shell_command_missing_args() {
         let (mut executor, _temp_dir) = create_test_executor().await;
         
-        let args = json!({});
-        
-        let result = executor.execute_tool("shell_command", &args).await;
+        // Test with empty string - should fail validation
+        let result = executor.execute_tool_with_raw_args("shell_command", "").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing 'command' argument"));
+        let error_msg = result.unwrap_err().to_string();
+        println!("Error message: {}", error_msg);
+        assert!(error_msg.contains("Failed to parse shell_command arguments"));
+        
+        // Test with just whitespace - should fail validation
+        let result = executor.execute_tool_with_raw_args("shell_command", "   ").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse shell_command arguments"));
     }
 
     #[tokio::test]
@@ -568,14 +778,15 @@ mod tests {
     async fn test_write_file_missing_args() {
         let (mut executor, _temp_dir) = create_test_executor().await;
         
-        let args = json!({
-            "path": "test.txt"
-            // Missing content
-        });
-        
-        let result = executor.execute_tool("write_file", &args).await;
+        // Test with empty string - should fail validation (empty path)
+        let result = executor.execute_tool_with_raw_args("write_file", "").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing 'content' argument"));
+        assert!(result.unwrap_err().to_string().contains("Failed to parse write_file arguments"));
+        
+        // Test with just whitespace - should fail validation (empty path)
+        let result = executor.execute_tool_with_raw_args("write_file", "   ").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse write_file arguments"));
     }
 
     #[tokio::test]
@@ -602,24 +813,24 @@ mod tests {
     async fn test_read_file_not_found() {
         let (mut executor, _temp_dir) = create_test_executor().await;
         
-        let args = json!({
-            "path": "nonexistent.txt"
-        });
-        
-        let result = executor.execute_tool("read_file", &args).await;
+        let result = executor.execute_tool_with_raw_args("read_file", "nonexistent.txt").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to read file"));
+        assert!(result.unwrap_err().to_string().contains("File does not exist"));
     }
 
     #[tokio::test]
     async fn test_read_file_missing_args() {
         let (mut executor, _temp_dir) = create_test_executor().await;
         
-        let args = json!({});
-        
-        let result = executor.execute_tool("read_file", &args).await;
+        // Test with empty string - should fail validation
+        let result = executor.execute_tool_with_raw_args("read_file", "").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing 'path' argument"));
+        assert!(result.unwrap_err().to_string().contains("Failed to parse read_file arguments"));
+        
+        // Test with just whitespace - should fail validation
+        let result = executor.execute_tool_with_raw_args("read_file", "   ").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse read_file arguments"));
     }
 
     #[tokio::test]
@@ -657,11 +868,15 @@ mod tests {
     async fn test_git_command_missing_args() {
         let (mut executor, _temp_dir) = create_test_executor().await;
         
-        let args = json!({});
-        
-        let result = executor.execute_tool("git_command", &args).await;
+        // Test with empty string - should fail validation
+        let result = executor.execute_tool_with_raw_args("git_command", "").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing 'command' argument"));
+        assert!(result.unwrap_err().to_string().contains("Failed to parse git_command arguments"));
+        
+        // Test with just whitespace - should fail validation
+        let result = executor.execute_tool_with_raw_args("git_command", "   ").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse git_command arguments"));
     }
 
     #[tokio::test]
@@ -718,11 +933,15 @@ impl TestStruct {
     async fn test_code_analysis_missing_args() {
         let (mut executor, _temp_dir) = create_test_executor().await;
         
-        let args = json!({});
-        
-        let result = executor.execute_tool("code_analysis", &args).await;
+        // Test with empty string - should fail validation
+        let result = executor.execute_tool_with_raw_args("code_analysis", "").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing 'path' argument"));
+        assert!(result.unwrap_err().to_string().contains("Failed to parse code_analysis arguments"));
+        
+        // Test with just whitespace - should fail validation
+        let result = executor.execute_tool_with_raw_args("code_analysis", "   ").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse code_analysis arguments"));
     }
 
     #[tokio::test]

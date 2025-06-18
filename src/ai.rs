@@ -496,7 +496,7 @@ Let me check the current git status of your repository.
     }
     
     pub fn add_tool_result(&mut self, tool_name: &str, result: &str) {
-        let content = format!("Tool '{}' executed with result:\n```\n{}\n```", tool_name, result);
+        let content = format!("TOOL EXECUTION COMPLETED:\nTool: {}\nResult:\n```\n{}\n```\n\nIMPORTANT: Do not repeat this same command. Analyze the result above and determine the next logical step to complete the user's request. If this was a directory listing, look for specific files. If this was a file read, process the content. Always move forward in your task.", tool_name, result);
         self.conversation_history.push(Message {
             role: "user".to_string(),
             content,
