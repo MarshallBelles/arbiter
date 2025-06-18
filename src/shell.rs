@@ -604,6 +604,43 @@ Always be helpful, professional, and focused on empowering the user's developmen
     }
     
     fn prepare_tool_args(&self, tool_call: &crate::ai::ToolCall) -> serde_json::Value {
+        // First, try to parse the args as JSON
+        if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&tool_call.args) {
+            // If it's already valid JSON, check if it has the expected structure for this tool
+            match tool_call.name.as_str() {
+                "shell_command" => {
+                    if parsed_json.get("command").is_some() {
+                        return parsed_json;
+                    }
+                }
+                "write_file" => {
+                    if parsed_json.get("path").is_some() && parsed_json.get("content").is_some() {
+                        return parsed_json;
+                    }
+                }
+                "read_file" => {
+                    if parsed_json.get("path").is_some() {
+                        return parsed_json;
+                    }
+                }
+                "git_command" => {
+                    if parsed_json.get("command").is_some() {
+                        return parsed_json;
+                    }
+                }
+                "code_analysis" => {
+                    if parsed_json.get("path").is_some() {
+                        return parsed_json;
+                    }
+                }
+                _ => {
+                    // For unknown tools, accept any valid JSON
+                    return parsed_json;
+                }
+            }
+        }
+
+        // Fallback to legacy string-based parsing for backward compatibility
         match tool_call.name.as_str() {
             "shell_command" => {
                 serde_json::json!({
