@@ -12,13 +12,17 @@ pub struct Config {
     pub max_tokens: usize,
     pub lsp_servers: Vec<LspServerConfig>,
     pub orchestration: OrchestrationConfig,
+    pub user_model_selection: UserModelSelection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
     pub enabled: bool,
     pub arbiter_model: ModelConfig,
-    pub winchester_model: ModelConfig,
+    pub templar_model: ModelConfig,
+    pub dragoon_model: ModelConfig,
+    pub immortal_model: ModelConfig,
+    pub observer_model: ModelConfig,
     pub max_iterations: usize,
     pub context_compression_threshold: usize,
     pub model_switch_cooldown_ms: u64,
@@ -42,6 +46,27 @@ pub struct LspServerConfig {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserModelSelection {
+    pub reasoning_model: String,
+    pub execution_model: String,
+    pub observer_model: String,
+    pub system_ram_gb: Option<u32>,
+    pub first_run_completed: bool,
+}
+
+impl Default for UserModelSelection {
+    fn default() -> Self {
+        Self {
+            reasoning_model: "arbiter".to_string(),
+            execution_model: "dragoon".to_string(),
+            observer_model: "observer".to_string(),
+            system_ram_gb: None,
+            first_run_completed: false,
+        }
+    }
+}
+
 impl Default for OrchestrationConfig {
     fn default() -> Self {
         Self {
@@ -49,15 +74,36 @@ impl Default for OrchestrationConfig {
             arbiter_model: ModelConfig {
                 name: "arbiter".to_string(),
                 temperature: 0.7,
-                description: "Reasoning and planning model for complex tasks".to_string(),
+                description: "Default reasoning model (128K context)".to_string(),
                 server: "http://localhost:11434".to_string(),
                 enabled: true,
             },
-            winchester_model: ModelConfig {
-                name: "winchester".to_string(),
+            templar_model: ModelConfig {
+                name: "templar".to_string(),
+                temperature: 0.7,
+                description: "Advanced reasoning model (128K context, >32GB RAM)".to_string(),
+                server: "http://localhost:11434".to_string(),
+                enabled: true,
+            },
+            dragoon_model: ModelConfig {
+                name: "dragoon".to_string(),
                 temperature: 0.15,
-                description: "Execution and coding model for precise implementation".to_string(),
-                server: "http://localhost:11435".to_string(), // Default to different port - change to your second machine's IP:11434
+                description: "Default execution model (32K context)".to_string(),
+                server: "http://localhost:11434".to_string(),
+                enabled: true,
+            },
+            immortal_model: ModelConfig {
+                name: "immortal".to_string(),
+                temperature: 0.15,
+                description: "Advanced execution model (128K context, >32GB RAM)".to_string(),
+                server: "http://localhost:11434".to_string(),
+                enabled: true,
+            },
+            observer_model: ModelConfig {
+                name: "observer".to_string(),
+                temperature: 0.3,
+                description: "Context summarization model (128K context)".to_string(),
+                server: "http://localhost:11434".to_string(),
                 enabled: true,
             },
             max_iterations: 10,
@@ -100,6 +146,7 @@ impl Default for Config {
             temperature: 0.7, // Legacy field
             max_tokens: 4096,
             orchestration: OrchestrationConfig::default(),
+            user_model_selection: UserModelSelection::default(),
             lsp_servers: vec![
                 LspServerConfig {
                     language: "rust".to_string(),
@@ -256,6 +303,88 @@ impl Config {
         }
 
         Self::open_config_in_editor(&config_path)
+    }
+    
+    pub fn detect_system_ram() -> Result<u32> {
+        #[cfg(target_os = "macos")]
+        {
+            let output = Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .context("Failed to execute sysctl command")?;
+            
+            if output.status.success() {
+                let memsize_str = String::from_utf8_lossy(&output.stdout);
+                let memsize_bytes = memsize_str.trim().parse::<u64>()
+                    .context("Failed to parse memory size")?;
+                let memsize_gb = (memsize_bytes / (1024 * 1024 * 1024)) as u32;
+                return Ok(memsize_gb);
+            }
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
+            let output = Command::new("free")
+                .args(["-b"])
+                .output()
+                .context("Failed to execute free command")?;
+            
+            if output.status.success() {
+                let output_str = String::from_utf8_lossy(&output.stdout);
+                for line in output_str.lines() {
+                    if line.starts_with("Mem:") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() > 1 {
+                            let total_bytes = parts[1].parse::<u64>()
+                                .context("Failed to parse memory size")?;
+                            let total_gb = (total_bytes / (1024 * 1024 * 1024)) as u32;
+                            return Ok(total_gb);
+                        }
+                    }
+                }
+            }
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            let output = Command::new("wmic")
+                .args(["computersystem", "get", "TotalPhysicalMemory"])
+                .output()
+                .context("Failed to execute wmic command")?;
+            
+            if output.status.success() {
+                let output_str = String::from_utf8_lossy(&output.stdout);
+                for line in output_str.lines() {
+                    if let Ok(bytes) = line.trim().parse::<u64>() {
+                        let gb = (bytes / (1024 * 1024 * 1024)) as u32;
+                        return Ok(gb);
+                    }
+                }
+            }
+        }
+        
+        // Default to 8GB if detection fails
+        Ok(8)
+    }
+    
+    pub fn get_reasoning_model_options(ram_gb: u32) -> Vec<(&'static str, &'static str)> {
+        let mut options = vec![("arbiter", "Default reasoning model (128K context)")];
+        
+        if ram_gb >= 32 {
+            options.push(("templar", "Advanced reasoning model (128K context, >32GB RAM)"));
+        }
+        
+        options
+    }
+    
+    pub fn get_execution_model_options(ram_gb: u32) -> Vec<(&'static str, &'static str)> {
+        let mut options = vec![("dragoon", "Default execution model (32K context)")];
+        
+        if ram_gb >= 32 {
+            options.push(("immortal", "Advanced execution model (128K context, >32GB RAM)"));
+        }
+        
+        options
     }
 }
 

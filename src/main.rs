@@ -10,6 +10,8 @@ mod tree_sitter_support;
 mod lsp;
 mod tools;
 mod tool_args;
+mod completion;
+mod input_handler;
 
 use config::Config;
 use shell::Shell;

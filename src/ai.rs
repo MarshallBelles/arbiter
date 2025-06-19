@@ -10,8 +10,17 @@ use crate::config::Config;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelType {
-    Arbiter,    // Reasoning and planning model
-    Winchester, // Execution and coding model
+    // Reasoning Models
+    Arbiter,    // DeepSeek-R1, 128K context (default reasoning)
+    Templar,    // Qwen3-30B-A3B, 128K context (>32GB RAM)
+    
+    // Execution Models  
+    Dragoon,    // Qwen2.5-Coder-14B-Instruct-128K, 32K context (default execution)
+    Immortal,   // Devstral-Small-2505, 128K context (>32GB RAM)
+    
+    // Utility Models
+    Observer,   // gemma-3-4b-it, 128K context (summarization)
+    
     Custom(String), // Custom model by name
 }
 
@@ -19,15 +28,21 @@ impl ModelType {
     pub fn model_name(&self) -> String {
         match self {
             ModelType::Arbiter => "arbiter".to_string(),
-            ModelType::Winchester => "winchester".to_string(),
+            ModelType::Templar => "templar".to_string(),
+            ModelType::Dragoon => "dragoon".to_string(),
+            ModelType::Immortal => "immortal".to_string(),
+            ModelType::Observer => "observer".to_string(),
             ModelType::Custom(name) => name.clone(),
         }
     }
     
     pub fn description(&self) -> String {
         match self {
-            ModelType::Arbiter => "Reasoning and planning model".to_string(),
-            ModelType::Winchester => "Execution and coding model".to_string(),
+            ModelType::Arbiter => "Default reasoning model (128K context)".to_string(),
+            ModelType::Templar => "Advanced reasoning model (128K context, >32GB RAM)".to_string(),
+            ModelType::Dragoon => "Default execution model (32K context)".to_string(),
+            ModelType::Immortal => "Advanced execution model (128K context, >32GB RAM)".to_string(),
+            ModelType::Observer => "Context summarization model (128K context)".to_string(),
             ModelType::Custom(name) => format!("Custom model: {}", name),
         }
     }
@@ -35,8 +50,43 @@ impl ModelType {
     pub fn from_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
             "arbiter" => ModelType::Arbiter,
-            "winchester" => ModelType::Winchester,
+            "templar" => ModelType::Templar,
+            "dragoon" => ModelType::Dragoon,
+            "immortal" => ModelType::Immortal,
+            "observer" => ModelType::Observer,
             _ => ModelType::Custom(name.to_string()),
+        }
+    }
+    
+    pub fn context_limit(&self) -> usize {
+        match self {
+            ModelType::Arbiter => 131072,    // 128K
+            ModelType::Templar => 131072,    // 128K
+            ModelType::Dragoon => 32768,     // 32K
+            ModelType::Immortal => 131072,   // 128K
+            ModelType::Observer => 131072,   // 128K
+            ModelType::Custom(_) => 8192,    // Default for custom models
+        }
+    }
+    
+    pub fn requires_high_ram(&self) -> bool {
+        match self {
+            ModelType::Templar | ModelType::Immortal => true,
+            _ => false,
+        }
+    }
+    
+    pub fn is_reasoning_model(&self) -> bool {
+        match self {
+            ModelType::Arbiter | ModelType::Templar => true,
+            _ => false,
+        }
+    }
+    
+    pub fn is_execution_model(&self) -> bool {
+        match self {
+            ModelType::Dragoon | ModelType::Immortal => true,
+            _ => false,
         }
     }
 }
@@ -53,9 +103,42 @@ impl TaskPhase {
     pub fn preferred_model(&self) -> ModelType {
         match self {
             TaskPhase::Planning => ModelType::Arbiter,
-            TaskPhase::Execution => ModelType::Winchester,
+            TaskPhase::Execution => ModelType::Dragoon,
             TaskPhase::Evaluation => ModelType::Arbiter,
             TaskPhase::Completion => ModelType::Arbiter,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationMode {
+    Arbiter,  // Full intelligence (reasoning + execution)
+    Plan,     // Planning only (reasoning model)
+    Act,      // Execution only (execution model)
+}
+
+impl OperationMode {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            OperationMode::Arbiter => OperationMode::Plan,
+            OperationMode::Plan => OperationMode::Act,
+            OperationMode::Act => OperationMode::Arbiter,
+        }
+    }
+    
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            OperationMode::Arbiter => "Arbiter",
+            OperationMode::Plan => "Plan",
+            OperationMode::Act => "Act",
+        }
+    }
+    
+    pub fn display_color(&self) -> crossterm::style::Color {
+        match self {
+            OperationMode::Arbiter => crossterm::style::Color::Magenta,
+            OperationMode::Plan => crossterm::style::Color::Green,
+            OperationMode::Act => crossterm::style::Color::Cyan,
         }
     }
 }
@@ -140,15 +223,15 @@ impl AiClient {
         let context_limit = config.orchestration.context_compression_threshold;
         
         // Validate model configurations
-        if !config.orchestration.arbiter_model.enabled && !config.orchestration.winchester_model.enabled {
-            warn!("Both models are disabled in configuration. At least one model should be enabled.");
+        if !config.orchestration.arbiter_model.enabled && !config.orchestration.dragoon_model.enabled {
+            warn!("Both reasoning and execution models are disabled in configuration. At least one model should be enabled.");
         }
         
         // Choose initial model based on what's enabled
         let initial_model = if config.orchestration.arbiter_model.enabled {
             ModelType::Arbiter
-        } else if config.orchestration.winchester_model.enabled {
-            ModelType::Winchester
+        } else if config.orchestration.dragoon_model.enabled {
+            ModelType::Dragoon
         } else {
             // Fallback to Arbiter even if disabled (will show error when used)
             ModelType::Arbiter
@@ -255,7 +338,10 @@ impl AiClient {
     fn get_model_config(&self, model_type: &ModelType) -> Option<&crate::config::ModelConfig> {
         match model_type {
             ModelType::Arbiter => Some(&self.config.orchestration.arbiter_model),
-            ModelType::Winchester => Some(&self.config.orchestration.winchester_model),
+            ModelType::Dragoon => Some(&self.config.orchestration.dragoon_model),
+            ModelType::Immortal => Some(&self.config.orchestration.immortal_model),
+            ModelType::Templar => Some(&self.config.orchestration.templar_model),
+            ModelType::Observer => Some(&self.config.orchestration.observer_model),
             ModelType::Custom(name) => {
                 self.config.orchestration.custom_models
                     .iter()
@@ -300,8 +386,20 @@ impl AiClient {
             models.push((ModelType::Arbiter, &self.config.orchestration.arbiter_model));
         }
         
-        if self.config.orchestration.winchester_model.enabled {
-            models.push((ModelType::Winchester, &self.config.orchestration.winchester_model));
+        if self.config.orchestration.dragoon_model.enabled {
+            models.push((ModelType::Dragoon, &self.config.orchestration.dragoon_model));
+        }
+        
+        if self.config.orchestration.immortal_model.enabled {
+            models.push((ModelType::Immortal, &self.config.orchestration.immortal_model));
+        }
+        
+        if self.config.orchestration.templar_model.enabled {
+            models.push((ModelType::Templar, &self.config.orchestration.templar_model));
+        }
+        
+        if self.config.orchestration.observer_model.enabled {
+            models.push((ModelType::Observer, &self.config.orchestration.observer_model));
         }
         
         for custom_model in &self.config.orchestration.custom_models {

@@ -15,9 +15,17 @@ use ratatui::{
 use std::io;
 use tracing::{debug, error, info};
 
-use crate::ai::{AiClient, StreamEvent, ToolCall, TaskPhase, ModelType};
+use crate::ai::{AiClient, StreamEvent, ToolCall, TaskPhase, ModelType, OperationMode};
 use crate::config::Config;
 use crate::tools::ToolExecutor;
+use crate::completion::{CompletionEngine, Completion, CompletionType};
+use crate::input_handler::{InputHandler, InputResult};
+
+#[derive(Debug, PartialEq)]
+enum InputType {
+    ShellCommand,
+    NaturalLanguage,
+}
 
 #[derive(Debug, Clone)]
 pub struct TaskState {
@@ -101,6 +109,8 @@ pub struct Shell {
     config: Config,
     task_state: Option<TaskState>,
     recent_commands: Vec<String>,
+    completion_engine: CompletionEngine,
+    operation_mode: OperationMode,
 }
 
 impl Shell {
@@ -148,12 +158,17 @@ TOOL EXECUTION PROTOCOL:
 Always be helpful, professional, and focused on empowering the user's development workflow. You are their intelligent terminal companion."
         );
         
+        let completion_engine = CompletionEngine::new()
+            .context("Failed to initialize completion engine")?;
+        
         Ok(Self {
             ai_client,
             tool_executor: ToolExecutor::new(),
             config,
             task_state: None,
             recent_commands: Vec::new(),
+            completion_engine,
+            operation_mode: OperationMode::Arbiter,
         })
     }
     
@@ -343,30 +358,46 @@ Always be helpful, professional, and focused on empowering the user's developmen
     }
     
     pub async fn run_interactive(&mut self) -> Result<()> {
-        use std::io::{self, Write};
-        use rustyline::Editor;
-        
         println!("\x1b[1;36mArbiter v1.0.0\x1b[0m - AI-powered peer-programmer");
-        println!("\x1b[90mType 'exit' or press Ctrl+C twice to quit\x1b[0m");
-        println!("\x1b[90mSpecial commands: 'edit config' to modify configuration\x1b[0m");
+        println!("\x1b[90mType 'exit' to quit, Shift+Tab to cycle modes (Arbiter/Plan/Act)\x1b[0m");
+        println!("\x1b[90mSpecial commands: 'edit config', 'model', 'models'\x1b[0m");
+        println!("\x1b[90mPress Tab for completions, Up/Down for history, Ctrl+C to interrupt\x1b[0m");
         println!();
         
-        let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
+        let mut input_handler = InputHandler::new();
         
         loop {
-            // Create the prompt with (Arbiter) prefix using professional colors
-            let prompt = if let Ok(user) = std::env::var("USER") {
-                if let Ok(hostname) = std::env::var("HOSTNAME") {
-                    format!("\x1b[90m(\x1b[1;34mArbiter\x1b[0;90m)\x1b[0m \x1b[1;32m{}@{}\x1b[0m\x1b[1;37m$\x1b[0m ", user, hostname)
-                } else {
-                    format!("\x1b[90m(\x1b[1;34mArbiter\x1b[0;90m)\x1b[0m \x1b[1;32m{}\x1b[0m\x1b[1;37m$\x1b[0m ", user)
-                }
+            // Update completion engine with current working directory
+            self.completion_engine.set_working_directory(self.tool_executor.get_working_directory().to_path_buf());
+            
+            // Create the prompt with (Arbiter) prefix and current directory using professional colors
+            let current_dir = self.tool_executor.get_working_directory();
+            let dir_display = if let Some(home) = std::env::var("HOME").ok() {
+                // Replace home directory with ~ for shorter display
+                current_dir.display().to_string().replace(&home, "~")
             } else {
-                "\x1b[90m(\x1b[1;34mArbiter\x1b[0;90m)\x1b[0m \x1b[1;37m$\x1b[0m ".to_string()
+                current_dir.display().to_string()
             };
             
-            match rl.readline(&prompt) {
-                Ok(line) => {
+            // Create mode display with appropriate color
+            let mode_display = match self.operation_mode {
+                OperationMode::Arbiter => "\x1b[1;35mArbiter\x1b[0m",  // Magenta
+                OperationMode::Plan => "\x1b[1;32mPlan\x1b[0m",      // Green
+                OperationMode::Act => "\x1b[1;36mAct\x1b[0m",       // Cyan
+            };
+            
+            let prompt = if let Ok(user) = std::env::var("USER") {
+                if let Ok(hostname) = std::env::var("HOSTNAME") {
+                    format!("\x1b[90m({})\x1b[0m \x1b[1;32m{}@{}\x1b[0m\x1b[1;33m:\x1b[0m\x1b[1;36m{}\x1b[0m\x1b[1;37m$\x1b[0m ", mode_display, user, hostname, dir_display)
+                } else {
+                    format!("\x1b[90m({})\x1b[0m \x1b[1;32m{}\x1b[0m\x1b[1;33m:\x1b[0m\x1b[1;36m{}\x1b[0m\x1b[1;37m$\x1b[0m ", mode_display, user, dir_display)
+                }
+            } else {
+                format!("\x1b[90m({})\x1b[0m \x1b[1;36m{}\x1b[0m\x1b[1;37m$\x1b[0m ", mode_display, dir_display)
+            };
+            
+            match input_handler.readline(&prompt, &self.completion_engine).await? {
+                InputResult::Input(line) => {
                     let input = line.trim();
                     if input.is_empty() {
                         continue;
@@ -376,8 +407,8 @@ Always be helpful, professional, and focused on empowering the user's developmen
                         break;
                     }
                     
-                    // Add to history
-                    let _ = rl.add_history_entry(&line);
+                    // Add to completion engine history as well
+                    self.completion_engine.add_to_history(line.clone());
                     
                     // Process the input
                     if let Err(e) = self.process_console_input(input).await {
@@ -386,16 +417,14 @@ Always be helpful, professional, and focused on empowering the user's developmen
                     
                     println!(); // Add spacing after output
                 }
-                Err(rustyline::error::ReadlineError::Interrupted) => {
-                    println!("^C");
-                    break;
+                InputResult::CycleMode => {
+                    // Cycle to next operation mode
+                    self.operation_mode = self.operation_mode.cycle_next();
+                    println!("\x1b[1;33mSwitched to {} mode\x1b[0m", self.operation_mode.display_name());
+                    continue;
                 }
-                Err(rustyline::error::ReadlineError::Eof) => {
-                    println!("exit");
-                    break;
-                }
-                Err(err) => {
-                    eprintln!("\x1b[1;31mError:\x1b[0m {:?}", err);
+                InputResult::Exit => {
+                    // User pressed Ctrl+C or exit command
                     break;
                 }
             }
@@ -424,8 +453,40 @@ Always be helpful, professional, and focused on empowering the user's developmen
             return Ok(());
         }
         
+        if sanitized_input.trim().eq_ignore_ascii_case("model") {
+            self.show_current_models();
+            return Ok(());
+        }
+        
+        if sanitized_input.trim().eq_ignore_ascii_case("models") {
+            self.show_available_models().await?;
+            return Ok(());
+        }
+        
+        if sanitized_input.trim().eq_ignore_ascii_case("edit model") {
+            self.show_model_selection_interface().await?;
+            return Ok(());
+        }
+        
         // Check if this is a shell command
         if self.is_shell_command(&sanitized_input) {
+            // Validate command before execution
+            let validation = self.completion_engine.validate_command(&sanitized_input);
+            
+            if !validation.is_valid {
+                if let Some(error_msg) = &validation.error_message {
+                    eprintln!("\x1b[1;31m{}\x1b[0m", error_msg);
+                    
+                    if !validation.suggestions.is_empty() {
+                        eprintln!("\x1b[1;33mDid you mean one of these?\x1b[0m");
+                        for suggestion in &validation.suggestions {
+                            eprintln!("  \x1b[1;32m{}\x1b[0m", suggestion);
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+            
             // Execute directly as shell command
             let args = serde_json::json!({
                 "command": sanitized_input
@@ -807,11 +868,136 @@ Always be helpful, professional, and focused on empowering the user's developmen
     }
     
     fn is_shell_command(&self, input: &str) -> bool {
-        Self::is_shell_command_static(input)
+        // Use smart routing to determine if this should be treated as a shell command
+        self.route_input_intelligently(input) == InputType::ShellCommand
+    }
+    
+    /// Smart input routing that analyzes whether input is a shell command or natural language
+    fn route_input_intelligently(&self, input: &str) -> InputType {
+        let trimmed = input.trim();
+        let first_word = trimmed.split_whitespace().next().unwrap_or("");
+        
+        // 1. Check for explicit executable paths
+        if first_word.starts_with("./") || first_word.starts_with("/") {
+            return InputType::ShellCommand;
+        }
+        
+        // 2. Check if command exists in PATH
+        let validation = self.completion_engine.validate_command(trimmed);
+        let command_exists = validation.is_valid;
+        
+        // 3. Natural language indicators
+        let natural_language_score = self.calculate_natural_language_score(trimmed);
+        
+        // 4. Shell command indicators
+        let shell_command_score = self.calculate_shell_command_score(trimmed, first_word, command_exists);
+        
+        // 5. Decision logic based on scores
+        if shell_command_score > natural_language_score && shell_command_score > 0.5 {
+            InputType::ShellCommand
+        } else if natural_language_score > 0.7 {
+            InputType::NaturalLanguage
+        } else if command_exists {
+            // If command exists but scores are close, prefer shell execution
+            InputType::ShellCommand
+        } else {
+            // Default to natural language for ambiguous cases
+            InputType::NaturalLanguage
+        }
+    }
+    
+    /// Calculate how much the input looks like natural language (0.0 to 1.0)
+    fn calculate_natural_language_score(&self, input: &str) -> f32 {
+        let mut score: f32 = 0.0;
+        let word_count = input.split_whitespace().count();
+        
+        // Question indicators
+        if input.contains('?') { score += 0.3; }
+        if input.starts_with("what") || input.starts_with("how") || input.starts_with("why") 
+           || input.starts_with("when") || input.starts_with("where") || input.starts_with("who") {
+            score += 0.4;
+        }
+        
+        // Request indicators
+        if input.contains("please") || input.contains("can you") || input.contains("could you")
+           || input.contains("help me") || input.contains("show me") {
+            score += 0.3;
+        }
+        
+        // Natural language patterns
+        if input.contains(" a ") || input.contains(" an ") || input.contains(" the ") {
+            score += 0.2;
+        }
+        
+        // Conversational starters
+        if input.starts_with("i ") || input.starts_with("my ") || input.starts_with("let's ") {
+            score += 0.3;
+        }
+        
+        // Long sentences tend to be natural language
+        if word_count > 5 {
+            score += 0.2;
+        }
+        if word_count > 10 {
+            score += 0.2;
+        }
+        
+        // Programming/coding requests
+        if input.contains("code") || input.contains("function") || input.contains("debug")
+           || input.contains("implement") || input.contains("create") || input.contains("write") {
+            score += 0.2;
+        }
+        
+        score.min(1.0)
+    }
+    
+    /// Calculate how much the input looks like a shell command (0.0 to 1.0)
+    fn calculate_shell_command_score(&self, input: &str, first_word: &str, command_exists: bool) -> f32 {
+        let mut score: f32 = 0.0;
+        
+        // Command exists in PATH
+        if command_exists {
+            score += 0.6;
+        }
+        
+        // Shell command patterns
+        if input.contains("|") || input.contains("&&") || input.contains("||") {
+            score += 0.3;
+        }
+        
+        // Redirection operators
+        if input.contains(">") || input.contains(">>") || input.contains("<") {
+            score += 0.3;
+        }
+        
+        // Flag patterns
+        if input.contains(" -") || input.contains(" --") {
+            score += 0.2;
+        }
+        
+        // File path patterns
+        if input.contains("/") || input.contains("~") || input.contains("./") {
+            score += 0.2;
+        }
+        
+        // Common shell command prefixes
+        if first_word.len() <= 6 && !input.contains(" a ") && !input.contains(" the ") {
+            score += 0.1;
+        }
+        
+        // Short commands are often shell commands
+        let word_count = input.split_whitespace().count();
+        if word_count <= 3 {
+            score += 0.2;
+        }
+        
+        score.min(1.0)
     }
     
     fn is_shell_command_static(input: &str) -> bool {
-        const SHELL_COMMANDS: &[&str] = &[
+        // Fallback static method for compatibility
+        // This is used when we don't have access to completion engine
+        const COMMON_SHELL_COMMANDS: &[&str] = &[
             "ls", "cd", "pwd", "mkdir", "rmdir", "rm", "cp", "mv", "cat", "less", "more",
             "grep", "find", "which", "whereis", "ps", "top", "kill", "killall", "jobs",
             "git", "npm", "cargo", "python", "node", "java", "gcc", "make", "cmake",
@@ -825,7 +1011,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
         ];
         
         let first_word = input.split_whitespace().next().unwrap_or("");
-        SHELL_COMMANDS.contains(&first_word) || first_word.starts_with("./") || first_word.starts_with("/")
+        COMMON_SHELL_COMMANDS.contains(&first_word) || first_word.starts_with("./") || first_word.starts_with("/")
     }
     
     async fn run_app<B: Backend>(&mut self, terminal: &mut Terminal<B>, app: &mut ShellApp) -> Result<()> {
@@ -1155,6 +1341,74 @@ Always be helpful, professional, and focused on empowering the user's developmen
         });
         
         regex.replace_all(text, "").to_string()
+    }
+    
+    fn show_current_models(&self) {
+        println!("\x1b[1;36mCurrent Model Configuration:\x1b[0m");
+        println!("  \x1b[1;33mReasoning:\x1b[0m {}", self.config.user_model_selection.reasoning_model);
+        println!("  \x1b[1;33mExecution:\x1b[0m {}", self.config.user_model_selection.execution_model);
+        println!("  \x1b[1;33mObserver:\x1b[0m {}", self.config.user_model_selection.observer_model);
+        if let Some(ram) = self.config.user_model_selection.system_ram_gb {
+            println!("  \x1b[1;33mSystem RAM:\x1b[0m {}GB", ram);
+        }
+    }
+    
+    async fn show_available_models(&self) -> Result<()> {
+        println!("\x1b[1;36mAvailable Models:\x1b[0m");
+        
+        let ram_gb = self.config.user_model_selection.system_ram_gb.unwrap_or(8);
+        
+        println!("\n\x1b[1;33mReasoning Models:\x1b[0m");
+        for (name, desc) in crate::config::Config::get_reasoning_model_options(ram_gb) {
+            let marker = if name == self.config.user_model_selection.reasoning_model { " \x1b[1;32m(current)\x1b[0m" } else { "" };
+            println!("  \x1b[1;32m{}\x1b[0m - {}{}", name, desc, marker);
+        }
+        
+        println!("\n\x1b[1;33mExecution Models:\x1b[0m");
+        for (name, desc) in crate::config::Config::get_execution_model_options(ram_gb) {
+            let marker = if name == self.config.user_model_selection.execution_model { " \x1b[1;32m(current)\x1b[0m" } else { "" };
+            println!("  \x1b[1;32m{}\x1b[0m - {}{}", name, desc, marker);
+        }
+        
+        println!("\n\x1b[1;33mUtility Models:\x1b[0m");
+        let marker = if "observer" == self.config.user_model_selection.observer_model { " \x1b[1;32m(current)\x1b[0m" } else { "" };
+        println!("  \x1b[1;32mobserver\x1b[0m - Context summarization model (128K context){}", marker);
+        
+        Ok(())
+    }
+    
+    async fn show_model_selection_interface(&mut self) -> Result<()> {
+        println!("\x1b[1;36mModel Selection Interface\x1b[0m");
+        println!("\x1b[90mNote: This is a simplified interface. For full configuration, use 'edit config'\x1b[0m");
+        
+        let ram_gb = self.config.user_model_selection.system_ram_gb.unwrap_or_else(|| {
+            match crate::config::Config::detect_system_ram() {
+                Ok(ram) => {
+                    println!("\x1b[1;33mDetected system RAM:\x1b[0m {}GB", ram);
+                    ram
+                }
+                Err(_) => {
+                    println!("\x1b[1;33mCould not detect system RAM, assuming 8GB\x1b[0m");
+                    8
+                }
+            }
+        });
+        
+        println!("\n\x1b[1;33mCurrent Configuration:\x1b[0m");
+        self.show_current_models();
+        
+        println!("\n\x1b[90mTo change models, use 'edit config' for full configuration options.\x1b[0m");
+        println!("\x1b[90mRecommended models for your system ({}GB RAM):\x1b[0m", ram_gb);
+        
+        if ram_gb >= 32 {
+            println!("  \x1b[1;32mReasoning:\x1b[0m arbiter (default) or templar (advanced)");
+            println!("  \x1b[1;32mExecution:\x1b[0m dragoon (default) or immortal (advanced)");
+        } else {
+            println!("  \x1b[1;32mReasoning:\x1b[0m arbiter (recommended for your system)");
+            println!("  \x1b[1;32mExecution:\x1b[0m dragoon (recommended for your system)");
+        }
+        
+        Ok(())
     }
 }
 

@@ -73,6 +73,11 @@ impl ToolExecutor {
         
         info!("Executing shell command: {}", command);
         
+        // Handle cd commands specially to maintain working directory state
+        if let Some(cd_path) = self.parse_cd_command(command) {
+            return self.handle_cd_command(&cd_path).await;
+        }
+        
         // Enhanced shell execution for complex commands
         // Use the system shell directly to handle pipes, redirects, complex syntax
         let shell = self.detect_shell();
@@ -481,6 +486,63 @@ impl ToolExecutor {
     
     pub fn get_working_directory(&self) -> &std::path::Path {
         &self.working_directory
+    }
+    
+    /// Parse cd command and extract the target path
+    fn parse_cd_command(&self, command: &str) -> Option<String> {
+        let trimmed = command.trim();
+        
+        // Handle various cd command formats
+        if trimmed == "cd" {
+            // cd with no arguments goes to home directory
+            Some("~".to_string())
+        } else if let Some(path) = trimmed.strip_prefix("cd ") {
+            // cd with path argument
+            Some(path.trim().to_string())
+        } else {
+            None
+        }
+    }
+    
+    /// Handle cd command by updating working directory
+    async fn handle_cd_command(&mut self, path: &str) -> Result<String> {
+        use std::path::Path;
+        
+        let target_path = if path == "~" {
+            // Handle home directory
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE")) // Windows fallback
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+        } else if path.starts_with("~/") {
+            // Handle ~/path
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/".to_string());
+            std::path::PathBuf::from(home).join(&path[2..])
+        } else if path.starts_with('/') {
+            // Absolute path
+            std::path::PathBuf::from(path)
+        } else {
+            // Relative path
+            self.working_directory.join(path)
+        };
+        
+        // Resolve to canonical path and verify it exists
+        match target_path.canonicalize() {
+            Ok(canonical_path) => {
+                if canonical_path.is_dir() {
+                    let old_dir = self.working_directory.display().to_string();
+                    self.set_working_directory(canonical_path.clone());
+                    Ok(format!("Changed directory from {} to {}", old_dir, canonical_path.display()))
+                } else {
+                    Err(anyhow::anyhow!("cd: {}: Not a directory", path))
+                }
+            }
+            Err(e) => {
+                Err(anyhow::anyhow!("cd: {}: {}", path, e))
+            }
+        }
     }
     
     fn is_interactive_command(&self, cmd: &str, args: &[String]) -> bool {
