@@ -173,7 +173,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
     }
     
     pub async fn process_prompt(&mut self, prompt: &str) -> Result<()> {
-        info!("Processing prompt: {}", prompt);
+        debug!("Processing prompt: {}", prompt);
         
         // Initialize task state
         let mut task_state = TaskState::new(prompt);
@@ -187,10 +187,10 @@ Always be helpful, professional, and focused on empowering the user's developmen
         
         // Orchestrated agent loop
         while task_state.should_continue() {
-            info!("Starting iteration {} in {:?} phase using {:?} model", 
-                  task_state.iteration_count + 1, 
-                  task_state.phase,
-                  self.ai_client.get_model_state().current_model);
+            debug!("Starting iteration {} in {:?} phase using {:?} model", 
+                   task_state.iteration_count + 1, 
+                   task_state.phase,
+                   self.ai_client.get_model_state().current_model);
             
             let input = if task_state.iteration_count == 0 {
                 prompt
@@ -494,9 +494,14 @@ Always be helpful, professional, and focused on empowering the user's developmen
             
             match self.tool_executor.execute_tool("shell_command", &args).await {
                 Ok(result) => {
-                    // Add the shell command and result to AI conversation context
+                    // Add the shell command and result to AI conversation context with Observer
                     self.ai_client.add_user_message(&format!("$ {}", sanitized_input));
-                    self.ai_client.add_tool_result("shell_command", &result);
+                    
+                    // Use Observer for intelligent context summarization
+                    if let Err(e) = self.ai_client.add_tool_result_with_observer("shell_command", &result).await {
+                        eprintln!("\x1b[1;33mObserver processing failed: {}\x1b[0m", e);
+                        self.ai_client.add_tool_result("shell_command", &result);
+                    }
                     
                     // Clean the result and print directly
                     let cleaned_result = Self::strip_ansi_codes(&result);
@@ -631,7 +636,13 @@ Always be helpful, professional, and focused on empowering the user's developmen
                             Ok(result) => {
                                 let cleaned_result = Self::strip_ansi_codes(&result);
                                 self.display_tool_output(&cleaned_result);
-                                self.ai_client.add_tool_result(&tool_call.name, &result);
+                                
+                                // Use Observer for intelligent context summarization
+                                if let Err(e) = self.ai_client.add_tool_result_with_observer(&tool_call.name, &result).await {
+                                    eprintln!("\x1b[1;33mObserver processing failed, using original result: {}\x1b[0m", e);
+                                    self.ai_client.add_tool_result(&tool_call.name, &result);
+                                }
+                                
                                 task_state.record_tool_execution();
                                 had_tool_calls = true;
                             }
@@ -1971,9 +1982,9 @@ mod tests {
     #[tokio::test]
     async fn test_shell_creation_with_custom_config() {
         let mut config = Config::default();
-        config.model = "custom-model".to_string();
-        config.server = "http://custom:8080".to_string();
-        config.temperature = 0.5;
+        config.user_model_selection.reasoning_model = "custom-model".to_string();
+        config.orchestration.arbiter_model.server = "http://custom:8080".to_string();
+        config.orchestration.arbiter_model.temperature = 0.5;
         
         let shell = Shell::new(config).await;
         assert!(shell.is_ok());

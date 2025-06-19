@@ -56,15 +56,25 @@ async fn main() -> Result<()> {
     // Override config with CLI args
     let mut config = config;
     if let Some(model) = cli.model {
-        config.model = model;
+        // For CLI override, update the user selection
+        config.user_model_selection.reasoning_model = model.clone();
+        config.user_model_selection.execution_model = model; // Use same model for both
     }
     if let Some(server) = cli.server {
-        config.server = server;
+        // Update all model servers to use the override
+        for model in &mut config.orchestration.models {
+            model.server = server.clone();
+        }
     }
     
     info!("Starting Arbiter v1.0.0");
-    info!("Using model: {}", config.model);
-    info!("Server: {}", config.server);
+    info!("Using reasoning model: {}", config.user_model_selection.reasoning_model);
+    info!("Using execution model: {}", config.user_model_selection.execution_model);
+    
+    // Show server endpoints from available models
+    if let Some(first_model) = config.orchestration.models.first() {
+        info!("Server endpoints: {}", first_model.server);
+    }
     
     // Handle different input modes
     match (cli.prompt, io::stdin().is_terminal()) {

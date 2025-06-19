@@ -62,7 +62,7 @@ impl ModelType {
         match self {
             ModelType::Arbiter => 131072,    // 128K
             ModelType::Templar => 131072,    // 128K
-            ModelType::Dragoon => 32768,     // 32K
+            ModelType::Dragoon => 131072,    // 128K
             ModelType::Immortal => 131072,   // 128K
             ModelType::Observer => 131072,   // 128K
             ModelType::Custom(_) => 8192,    // Default for custom models
@@ -215,25 +215,25 @@ pub struct AiClient {
     config: Config,
     conversation_history: Vec<Message>,
     model_state: ModelState,
-    context_limit: usize,
 }
 
 impl AiClient {
     pub fn new(config: Config) -> Self {
-        let context_limit = config.orchestration.context_compression_threshold;
+        // Validate that we have essential models available
+        let has_arbiter = config.orchestration.models.iter().any(|m| m.name == "arbiter");
+        let has_dragoon = config.orchestration.models.iter().any(|m| m.name == "dragoon");
         
-        // Validate model configurations
-        if !config.orchestration.arbiter_model.enabled && !config.orchestration.dragoon_model.enabled {
-            warn!("Both reasoning and execution models are disabled in configuration. At least one model should be enabled.");
+        if !has_arbiter && !has_dragoon {
+            warn!("Neither reasoning (arbiter) nor execution (dragoon) models are configured. At least one should be available.");
         }
         
-        // Choose initial model based on what's enabled
-        let initial_model = if config.orchestration.arbiter_model.enabled {
+        // Choose initial model based on what's available
+        let initial_model = if has_arbiter {
             ModelType::Arbiter
-        } else if config.orchestration.dragoon_model.enabled {
+        } else if has_dragoon {
             ModelType::Dragoon
         } else {
-            // Fallback to Arbiter even if disabled (will show error when used)
+            // Fallback to Arbiter even if not configured (will show error when used)
             ModelType::Arbiter
         };
         
@@ -247,7 +247,6 @@ impl AiClient {
                 switch_count: 0,
                 last_switch_time: std::time::Instant::now(),
             },
-            context_limit,
         };
         
         info!("Initializing AI client with {} model ({})", 
@@ -263,27 +262,23 @@ impl AiClient {
             return Ok(false); // No switch needed
         }
         
-        // Check if target model is enabled
-        let target_config = match self.get_model_config(&target_model) {
-            Some(config) if config.enabled => config,
-            Some(config) => {
-                warn!("Attempted to switch to disabled model {}. Staying with current model.", config.name);
-                return Ok(false);
-            }
+        // Check if target model is available (if it's in the list, it's enabled)
+        let target_entry = match self.get_model_entry(&target_model) {
+            Some(entry) => entry,
             None => {
-                warn!("Model configuration not found for {:?}. Staying with current model.", target_model);
+                warn!("Model not found in configuration: {:?}. Staying with current model.", target_model);
                 return Ok(false);
             }
         };
         
-        let current_config = self.get_model_config(&self.model_state.current_model)
-            .expect("Current model should always have valid config");
+        let current_entry = self.get_model_entry(&self.model_state.current_model)
+            .expect("Current model should always have valid entry");
         
-        info!("Switching from {} ({}) to {} ({})", 
-              current_config.name,
-              current_config.server,
-              target_config.name,
-              target_config.server);
+        debug!("Switching from {} ({}) to {} ({})", 
+               current_entry.name,
+               current_entry.server,
+               target_entry.name,
+               target_entry.server);
         
         // Load the target model
         self.load_model(target_model.clone()).await?;
@@ -298,21 +293,18 @@ impl AiClient {
     
     /// Load a specific model in Ollama
     async fn load_model(&self, model_type: ModelType) -> Result<()> {
-        let model_config = match self.get_model_config(&model_type) {
-            Some(config) if config.enabled => config,
-            Some(config) => {
-                return Err(anyhow::anyhow!("Model {} is disabled in configuration", config.name));
-            }
+        let model_entry = match self.get_model_entry(&model_type) {
+            Some(entry) => entry,
             None => {
-                return Err(anyhow::anyhow!("Model configuration not found for {:?}", model_type));
+                return Err(anyhow::anyhow!("Model not found in configuration: {:?}", model_type));
             }
         };
         
         // First, try to pull/load the model to ensure it's available
         let pull_response = self.client
-            .post(&format!("{}/api/pull", model_config.server))
+            .post(&format!("{}/api/pull", model_entry.server))
             .json(&serde_json::json!({
-                "name": model_config.name,
+                "name": model_entry.name,
                 "stream": false
             }))
             .send()
@@ -325,7 +317,7 @@ impl AiClient {
             // Continue anyway - model might already be loaded
         }
         
-        debug!("Successfully loaded model: {} from {}", model_config.name, model_config.server);
+        debug!("Successfully loaded model: {} from {}", model_entry.name, model_entry.server);
         Ok(())
     }
     
@@ -335,40 +327,45 @@ impl AiClient {
     }
     
     /// Get the current model configuration
-    fn get_model_config(&self, model_type: &ModelType) -> Option<&crate::config::ModelConfig> {
-        match model_type {
-            ModelType::Arbiter => Some(&self.config.orchestration.arbiter_model),
-            ModelType::Dragoon => Some(&self.config.orchestration.dragoon_model),
-            ModelType::Immortal => Some(&self.config.orchestration.immortal_model),
-            ModelType::Templar => Some(&self.config.orchestration.templar_model),
-            ModelType::Observer => Some(&self.config.orchestration.observer_model),
-            ModelType::Custom(name) => {
-                self.config.orchestration.custom_models
-                    .iter()
-                    .find(|model| model.name == *name)
-            }
-        }
+    fn get_model_entry(&self, model_type: &ModelType) -> Option<&crate::config::ModelEntry> {
+        let model_name = match model_type {
+            ModelType::Custom(name) => name.as_str(),
+            _ => &model_type.model_name(),
+        };
+        
+        self.config.orchestration.models
+            .iter()
+            .find(|model| model.name == model_name)
     }
     
     /// Get the current model name from config
     fn get_current_model_name(&self) -> String {
-        self.get_model_config(&self.model_state.current_model)
-            .map(|config| config.name.clone())
+        self.get_model_entry(&self.model_state.current_model)
+            .map(|entry| entry.name.clone())
             .unwrap_or_else(|| self.model_state.current_model.model_name())
     }
     
-    /// Get the current model temperature from config
+    /// Get the current model temperature (from modelfile, use default for now)
     fn get_current_model_temperature(&self) -> f32 {
-        self.get_model_config(&self.model_state.current_model)
-            .map(|config| config.temperature)
-            .unwrap_or(0.7) // Default temperature
+        // Temperature is now configured in modelfiles, use reasonable defaults
+        match &self.model_state.current_model {
+            ModelType::Arbiter | ModelType::Templar => 0.7,           // Reasoning models - more creative
+            ModelType::Dragoon | ModelType::Immortal => 0.15,         // Execution models - more precise  
+            ModelType::Observer => 0.3,                               // Observer - balanced
+            ModelType::Custom(_) => 0.7,                              // Default for custom models
+        }
     }
     
     /// Get the current model server endpoint
     fn get_current_model_server(&self) -> String {
-        self.get_model_config(&self.model_state.current_model)
-            .map(|config| config.server.clone())
-            .unwrap_or_else(|| self.config.server.clone()) // Fallback to legacy config
+        self.get_model_entry(&self.model_state.current_model)
+            .map(|entry| entry.server.clone())
+            .unwrap_or_else(|| "http://localhost:11434".to_string()) // Default server
+    }
+    
+    /// Get the current model context limit
+    fn get_current_model_context_limit(&self) -> usize {
+        self.model_state.current_model.context_limit()
     }
     
     /// Set task phase and switch model if needed
@@ -378,37 +375,15 @@ impl AiClient {
         self.switch_model_if_needed(preferred_model).await
     }
     
-    /// Get all available models
-    pub fn get_available_models(&self) -> Vec<(ModelType, &crate::config::ModelConfig)> {
-        let mut models = Vec::new();
-        
-        if self.config.orchestration.arbiter_model.enabled {
-            models.push((ModelType::Arbiter, &self.config.orchestration.arbiter_model));
-        }
-        
-        if self.config.orchestration.dragoon_model.enabled {
-            models.push((ModelType::Dragoon, &self.config.orchestration.dragoon_model));
-        }
-        
-        if self.config.orchestration.immortal_model.enabled {
-            models.push((ModelType::Immortal, &self.config.orchestration.immortal_model));
-        }
-        
-        if self.config.orchestration.templar_model.enabled {
-            models.push((ModelType::Templar, &self.config.orchestration.templar_model));
-        }
-        
-        if self.config.orchestration.observer_model.enabled {
-            models.push((ModelType::Observer, &self.config.orchestration.observer_model));
-        }
-        
-        for custom_model in &self.config.orchestration.custom_models {
-            if custom_model.enabled {
-                models.push((ModelType::Custom(custom_model.name.clone()), custom_model));
-            }
-        }
-        
-        models
+    /// Get all available models (if it's in the config, it's available)
+    pub fn get_available_models(&self) -> Vec<(ModelType, &crate::config::ModelEntry)> {
+        self.config.orchestration.models
+            .iter()
+            .map(|entry| {
+                let model_type = ModelType::from_name(&entry.name);
+                (model_type, entry)
+            })
+            .collect()
     }
     
     /// Force switch to a specific model by name
@@ -419,14 +394,11 @@ impl AiClient {
         
         let target_model = ModelType::from_name(model_name);
         
-        // Check if the model is available and enabled
-        match self.get_model_config(&target_model) {
-            Some(config) if config.enabled => {
-                info!("Manual model switch requested to: {} ({})", config.name, config.server);
+        // Check if the model is available (if it's in the list, it's enabled)
+        match self.get_model_entry(&target_model) {
+            Some(entry) => {
+                info!("Manual model switch requested to: {} ({})", entry.name, entry.server);
                 self.switch_model_if_needed(target_model).await
-            }
-            Some(_) => {
-                Err(anyhow::anyhow!("Model '{}' is disabled in configuration", model_name))
             }
             None => {
                 Err(anyhow::anyhow!("Model '{}' not found in configuration", model_name))
@@ -601,14 +573,99 @@ Let me check the current git status of your repository.
         });
     }
     
+    /// Add tool result with Observer summarization for large outputs
+    pub async fn add_tool_result_with_observer(&mut self, tool_name: &str, result: &str) -> Result<()> {
+        // Check if result is large enough to warrant Observer processing
+        if result.len() > 2000 {
+            match self.summarize_with_observer(tool_name, result).await {
+                Ok(summary) => {
+                    let content = format!("TOOL EXECUTION COMPLETED:\nTool: {}\nResult (summarized by Observer):\n```\n{}\n```\n\nIMPORTANT: Do not repeat this same command. Analyze the result above and determine the next logical step to complete the user's request. If this was a directory listing, look for specific files. If this was a file read, process the content. Always move forward in your task.", tool_name, summary);
+                    self.conversation_history.push(Message {
+                        role: "user".to_string(),
+                        content,
+                    });
+                }
+                Err(e) => {
+                    warn!("Observer summarization failed, using original result: {}", e);
+                    self.add_tool_result(tool_name, result);
+                }
+            }
+        } else {
+            // Use original result for smaller outputs
+            self.add_tool_result(tool_name, result);
+        }
+        Ok(())
+    }
+    
+    /// Summarize content using Observer model
+    async fn summarize_with_observer(&self, tool_name: &str, content: &str) -> Result<String> {
+        let observer_entry = self.get_model_entry(&ModelType::Observer)
+            .context("Observer model not found in configuration")?;
+        
+        let prompt = format!(
+            "You are Observer, an AI assistant specialized in intelligent context summarization.\n\
+            \n\
+            Please summarize the following {} output, focusing on:\n\
+            • Key findings and important results\n\
+            • Any errors, warnings, or critical status information\n\
+            • Relevant file paths, line numbers, and specific details\n\
+            • Command success/failure status and exit codes\n\
+            • Technical information needed for debugging and troubleshooting\n\
+            \n\
+            Provide a concise summary that preserves essential information while reducing verbosity:\n\
+            \n\
+            {}\n\
+            \n\
+            Please provide a brief but comprehensive summary that maintains technical accuracy:",
+            tool_name, content
+        );
+        
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: prompt,
+        }];
+        
+        let request = OllamaRequest {
+            model: observer_entry.name.clone(),
+            messages,
+            stream: false,
+            options: OllamaOptions {
+                temperature: 0.3, // Observer model temperature
+                num_ctx: ModelType::Observer.context_limit(),
+                num_predict: 2048,
+            },
+        };
+        
+        let response = self.client
+            .post(&format!("{}/api/chat", observer_entry.server))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send Observer request")?;
+        
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Observer request failed with status {}: {}", status, error_text));
+        }
+        
+        let ollama_response: OllamaResponse = response
+            .json()
+            .await
+            .context("Failed to parse Observer response")?;
+        
+        Ok(ollama_response.message.content)
+    }
+    
     pub async fn chat_stream(&mut self, user_input: &str) -> Result<mpsc::Receiver<StreamEvent>> {
         // Only add user message if it's not empty (for continuation calls)
         if !user_input.is_empty() {
             self.add_user_message(user_input);
         }
         
-        // Compress context if we're approaching limits
-        if self.estimate_token_count() > self.context_limit {
+        // Compress context if we're approaching limits (use 80% of model's context)
+        let dynamic_context_limit = (self.get_current_model_context_limit() as f64 * 0.8) as usize;
+        if self.estimate_token_count() > dynamic_context_limit {
             self.compress_conversation_context();
         }
         
@@ -618,8 +675,8 @@ Let me check the current git status of your repository.
             stream: true,
             options: OllamaOptions {
                 temperature: self.get_current_model_temperature(),
-                num_ctx: self.config.context_size,
-                num_predict: self.config.max_tokens,
+                num_ctx: self.get_current_model_context_limit(),
+                num_predict: 4096, // Standard token limit for generation
             },
         };
         
@@ -720,45 +777,71 @@ Let me check the current git status of your repository.
         total_chars / 4
     }
     
-    /// Compress conversation context when approaching limits
+    /// Intelligently compress conversation context when approaching limits
     fn compress_conversation_context(&mut self) {
         if self.conversation_history.len() <= 4 {
             return; // Keep minimum context
         }
         
-        info!("Compressing conversation context from {} messages", self.conversation_history.len());
+        let target_token_limit = (self.get_current_model_context_limit() as f64 * 0.7) as usize; // Use 70% to leave room for response
+        let current_tokens = self.estimate_token_count();
         
-        // Keep system message, last user message, and last assistant message
-        let mut compressed = Vec::new();
+        info!("Compressing conversation context from {} messages ({} tokens) to fit within {} tokens", 
+              self.conversation_history.len(), current_tokens, target_token_limit);
         
-        // Always keep system message
+        // Always preserve system message
+        let mut preserved = Vec::new();
+        let mut preserved_tokens = 0;
+        
         if let Some(system_msg) = self.conversation_history.first() {
             if system_msg.role == "system" {
-                compressed.push(system_msg.clone());
+                preserved_tokens += system_msg.content.len() / 4; // Rough token estimate
+                preserved.push(system_msg.clone());
             }
         }
         
-        // Keep last few messages for immediate context
-        let keep_count = 3; // Last 3 messages
-        let start_idx = self.conversation_history.len().saturating_sub(keep_count);
-        for msg in &self.conversation_history[start_idx..] {
-            if msg.role != "system" { // Don't duplicate system message
-                compressed.push(msg.clone());
+        // Work backwards from the most recent messages, keeping as many as fit
+        let mut messages_to_keep = Vec::new();
+        for msg in self.conversation_history.iter().rev() {
+            if msg.role == "system" {
+                continue; // Already handled system message
+            }
+            
+            let msg_tokens = msg.content.len() / 4;
+            if preserved_tokens + msg_tokens < target_token_limit {
+                preserved_tokens += msg_tokens;
+                messages_to_keep.push(msg.clone());
+            } else {
+                break; // Would exceed limit
             }
         }
         
-        // Add compression marker
-        if compressed.len() < self.conversation_history.len() {
-            let removed_count = self.conversation_history.len() - compressed.len();
+        // Reverse to restore chronological order
+        messages_to_keep.reverse();
+        
+        // Add all preserved messages
+        preserved.extend(messages_to_keep);
+        
+        // Add compression notice if we removed messages
+        if preserved.len() < self.conversation_history.len() {
+            let removed_count = self.conversation_history.len() - preserved.len();
             let compression_msg = Message {
                 role: "system".to_string(),
-                content: format!("[Context compressed: {} previous messages summarized for efficiency]", removed_count),
+                content: format!("[Context management: Preserved {} recent messages ({} tokens) for optimal performance. {} earlier messages compressed.]", 
+                                preserved.len() - 1, preserved_tokens, removed_count),
             };
-            compressed.insert(1, compression_msg); // Insert after main system message
+            
+            // Insert after system message
+            if preserved.len() > 1 {
+                preserved.insert(1, compression_msg);
+            } else {
+                preserved.push(compression_msg);
+            }
         }
         
-        self.conversation_history = compressed;
-        debug!("Compressed conversation to {} messages", self.conversation_history.len());
+        self.conversation_history = preserved;
+        debug!("Compressed conversation to {} messages (~{} tokens)", 
+               self.conversation_history.len(), preserved_tokens);
     }
     
     /// Create a task-focused context for model handoff

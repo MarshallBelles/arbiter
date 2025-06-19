@@ -309,6 +309,10 @@ impl InputHandler {
             (KeyCode::Tab, KeyModifiers::SHIFT) => {
                 return Ok(InputAction::CycleMode);
             }
+            (KeyCode::BackTab, _) => {
+                // BackTab is what most terminals send for Shift+Tab
+                return Ok(InputAction::CycleMode);
+            }
             (KeyCode::Tab, _) => {
                 self.handle_tab_completion(completion_engine, prompt, stdout).await?;
             }

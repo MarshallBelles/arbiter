@@ -5,11 +5,6 @@ use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub model: String, // Legacy field - kept for backward compatibility
-    pub server: String,
-    pub context_size: usize,
-    pub temperature: f32, // Legacy field - kept for backward compatibility
-    pub max_tokens: usize,
     pub lsp_servers: Vec<LspServerConfig>,
     pub orchestration: OrchestrationConfig,
     pub user_model_selection: UserModelSelection,
@@ -18,25 +13,16 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
     pub enabled: bool,
-    pub arbiter_model: ModelConfig,
-    pub templar_model: ModelConfig,
-    pub dragoon_model: ModelConfig,
-    pub immortal_model: ModelConfig,
-    pub observer_model: ModelConfig,
+    pub models: Vec<ModelEntry>,
     pub max_iterations: usize,
-    pub context_compression_threshold: usize,
     pub model_switch_cooldown_ms: u64,
-    pub custom_models: Vec<ModelConfig>,
     pub allow_model_override: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelConfig {
+pub struct ModelEntry {
     pub name: String,
-    pub temperature: f32,
-    pub description: String,
     pub server: String,
-    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,67 +57,32 @@ impl Default for OrchestrationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            arbiter_model: ModelConfig {
-                name: "arbiter".to_string(),
-                temperature: 0.7,
-                description: "Default reasoning model (128K context)".to_string(),
-                server: "http://localhost:11434".to_string(),
-                enabled: true,
-            },
-            templar_model: ModelConfig {
-                name: "templar".to_string(),
-                temperature: 0.7,
-                description: "Advanced reasoning model (128K context, >32GB RAM)".to_string(),
-                server: "http://localhost:11434".to_string(),
-                enabled: true,
-            },
-            dragoon_model: ModelConfig {
-                name: "dragoon".to_string(),
-                temperature: 0.15,
-                description: "Default execution model (32K context)".to_string(),
-                server: "http://localhost:11434".to_string(),
-                enabled: true,
-            },
-            immortal_model: ModelConfig {
-                name: "immortal".to_string(),
-                temperature: 0.15,
-                description: "Advanced execution model (128K context, >32GB RAM)".to_string(),
-                server: "http://localhost:11434".to_string(),
-                enabled: true,
-            },
-            observer_model: ModelConfig {
-                name: "observer".to_string(),
-                temperature: 0.3,
-                description: "Context summarization model (128K context)".to_string(),
-                server: "http://localhost:11434".to_string(),
-                enabled: true,
-            },
-            max_iterations: 10,
-            context_compression_threshold: 6000,
-            model_switch_cooldown_ms: 500,
-            custom_models: vec![
-                ModelConfig {
-                    name: "llama3.2".to_string(),
-                    temperature: 0.8,
-                    description: "Meta's Llama 3.2 for general tasks".to_string(),
+            models: vec![
+                // Core models - always included
+                ModelEntry {
+                    name: "arbiter".to_string(),
                     server: "http://localhost:11434".to_string(),
-                    enabled: false, // Disabled by default, enable as needed
                 },
-                ModelConfig {
-                    name: "qwen2.5-coder".to_string(),
-                    temperature: 0.2,
-                    description: "Qwen 2.5 Coder for programming tasks".to_string(),
+                ModelEntry {
+                    name: "dragoon".to_string(),
                     server: "http://localhost:11434".to_string(),
-                    enabled: false,
                 },
-                ModelConfig {
-                    name: "deepseek-coder".to_string(),
-                    temperature: 0.1,
-                    description: "DeepSeek Coder for code generation".to_string(),
+                ModelEntry {
+                    name: "observer".to_string(),
                     server: "http://localhost:11434".to_string(),
-                    enabled: false,
+                },
+                // Advanced models - optional, comment out if not available
+                ModelEntry {
+                    name: "templar".to_string(),
+                    server: "http://localhost:11434".to_string(),
+                },
+                ModelEntry {
+                    name: "immortal".to_string(),
+                    server: "http://localhost:11434".to_string(),
                 },
             ],
+            max_iterations: 10,
+            model_switch_cooldown_ms: 500,
             allow_model_override: true,
         }
     }
@@ -140,11 +91,6 @@ impl Default for OrchestrationConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: "arbiter".to_string(), // Default to reasoning model
-            server: "http://localhost:11434".to_string(),
-            context_size: 8192, // Updated to match new model configs
-            temperature: 0.7, // Legacy field
-            max_tokens: 4096,
             orchestration: OrchestrationConfig::default(),
             user_model_selection: UserModelSelection::default(),
             lsp_servers: vec![
@@ -395,12 +341,8 @@ mod tests {
 
     fn create_test_config() -> Config {
         Config {
-            model: "test-model".to_string(),
-            server: "http://test:8080".to_string(),
-            context_size: 1000,
-            temperature: 0.5,
-            max_tokens: 500,
             orchestration: OrchestrationConfig::default(),
+            user_model_selection: UserModelSelection::default(),
             lsp_servers: vec![
                 LspServerConfig {
                     language: "rust".to_string(),
@@ -415,11 +357,9 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         
-        assert_eq!(config.model, "arbiter");
-        assert_eq!(config.server, "http://localhost:11434");
-        assert_eq!(config.context_size, 8192);
-        assert_eq!(config.temperature, 0.7);
-        assert_eq!(config.max_tokens, 4096);
+        assert_eq!(config.user_model_selection.reasoning_model, "arbiter");
+        assert_eq!(config.user_model_selection.execution_model, "dragoon");
+        assert_eq!(config.orchestration.arbiter_model.server, "http://localhost:11434");
         assert_eq!(config.lsp_servers.len(), 10);
         
         // Check some key language servers
@@ -447,19 +387,14 @@ mod tests {
         
         // Test serialization to TOML
         let toml_str = toml::to_string_pretty(&config).unwrap();
-        assert!(toml_str.contains("model = \"test-model\""));
-        assert!(toml_str.contains("server = \"http://test:8080\""));
-        assert!(toml_str.contains("context_size = 1000"));
-        assert!(toml_str.contains("temperature = 0.5"));
-        assert!(toml_str.contains("max_tokens = 500"));
+        assert!(toml_str.contains("reasoning_model = \"arbiter\""));
+        assert!(toml_str.contains("execution_model = \"dragoon\""));
+        assert!(toml_str.contains("server = \"http://localhost:11434\""));
         
         // Test deserialization from TOML
         let deserialized: Config = toml::from_str(&toml_str).unwrap();
-        assert_eq!(deserialized.model, config.model);
-        assert_eq!(deserialized.server, config.server);
-        assert_eq!(deserialized.context_size, config.context_size);
-        assert_eq!(deserialized.temperature, config.temperature);
-        assert_eq!(deserialized.max_tokens, config.max_tokens);
+        assert_eq!(deserialized.user_model_selection.reasoning_model, config.user_model_selection.reasoning_model);
+        assert_eq!(deserialized.orchestration.arbiter_model.server, config.orchestration.arbiter_model.server);
         assert_eq!(deserialized.lsp_servers.len(), config.lsp_servers.len());
     }
 
@@ -476,11 +411,9 @@ mod tests {
         // Load the config
         let loaded_config = Config::load(Some(config_path.to_str().unwrap())).unwrap();
         
-        assert_eq!(loaded_config.model, "test-model");
-        assert_eq!(loaded_config.server, "http://test:8080");
-        assert_eq!(loaded_config.context_size, 1000);
-        assert_eq!(loaded_config.temperature, 0.5);
-        assert_eq!(loaded_config.max_tokens, 500);
+        assert_eq!(loaded_config.user_model_selection.reasoning_model, "arbiter");
+        assert_eq!(loaded_config.user_model_selection.execution_model, "dragoon");
+        assert_eq!(loaded_config.orchestration.arbiter_model.server, "http://localhost:11434");
     }
 
     #[test]
@@ -492,7 +425,7 @@ mod tests {
         // Test that default config can be created and serialized
         let default_config = Config::default();
         let config_str = toml::to_string_pretty(&default_config).unwrap();
-        assert!(config_str.contains("model = \"arbiter\""));
+        assert!(config_str.contains("reasoning_model = \"arbiter\""));
         assert!(config_str.contains("server = \"http://localhost:11434\""));
     }
 
@@ -517,11 +450,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("incomplete.toml");
         
-        // Write TOML with missing fields
+        // Write TOML with missing required fields
         let incomplete_toml = r#"
-            model = "test-model"
-            server = "http://test:8080"
-            # Missing context_size, temperature, max_tokens, lsp_servers
+            # Missing orchestration and user_model_selection fields
+            [[lsp_servers]]
+            language = "rust"
+            command = "rust-analyzer"
+            args = []
         "#;
         std::fs::write(&config_path, incomplete_toml).unwrap();
         
@@ -548,11 +483,8 @@ mod tests {
         let config = create_test_config();
         let cloned = config.clone();
         
-        assert_eq!(config.model, cloned.model);
-        assert_eq!(config.server, cloned.server);
-        assert_eq!(config.context_size, cloned.context_size);
-        assert_eq!(config.temperature, cloned.temperature);
-        assert_eq!(config.max_tokens, cloned.max_tokens);
+        assert_eq!(config.user_model_selection.reasoning_model, cloned.user_model_selection.reasoning_model);
+        assert_eq!(config.orchestration.arbiter_model.server, cloned.orchestration.arbiter_model.server);
         assert_eq!(config.lsp_servers.len(), cloned.lsp_servers.len());
     }
 
@@ -576,8 +508,8 @@ mod tests {
         let debug_str = format!("{:?}", config);
         
         assert!(debug_str.contains("Config"));
-        assert!(debug_str.contains("test-model"));
-        assert!(debug_str.contains("http://test:8080"));
+        assert!(debug_str.contains("arbiter"));
+        assert!(debug_str.contains("http://localhost:11434"));
     }
 
     #[test]
@@ -618,10 +550,8 @@ mod tests {
         let config = Config::default();
         
         // Verify reasonable parameter ranges
-        assert!(config.context_size > 0 && config.context_size <= 100_000);
-        assert!(config.temperature >= 0.0 && config.temperature <= 2.0);
-        assert!(config.max_tokens > 0 && config.max_tokens <= 10_000);
-        assert!(!config.model.is_empty());
-        assert!(config.server.starts_with("http"));
+        assert!(config.orchestration.arbiter_model.temperature >= 0.0 && config.orchestration.arbiter_model.temperature <= 2.0);
+        assert!(!config.user_model_selection.reasoning_model.is_empty());
+        assert!(config.orchestration.arbiter_model.server.starts_with("http"));
     }
 }

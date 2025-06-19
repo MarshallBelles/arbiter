@@ -71,7 +71,7 @@ impl ToolExecutor {
     async fn execute_shell_command_typed(&mut self, args: ShellCommandArgs) -> Result<String> {
         let command = &args.command;
         
-        info!("Executing shell command: {}", command);
+        debug!("Executing shell command: {}", command);
         
         // Handle cd commands specially to maintain working directory state
         if let Some(cd_path) = self.parse_cd_command(command) {
@@ -149,7 +149,7 @@ impl ToolExecutor {
         tokio::fs::write(&full_path, content).await
             .context("Failed to write file")?;
         
-        info!("Written file: {}", full_path.display());
+        debug!("Written file: {}", full_path.display());
         Ok(format!("Successfully wrote {} bytes to {}", content.len(), path))
     }
     
@@ -158,8 +158,8 @@ impl ToolExecutor {
         
         let full_path = self.working_directory.join(path);
         
-        info!("Attempting to read file: {} (full path: {})", path, full_path.display());
-        info!("Working directory: {}", self.working_directory.display());
+        debug!("Attempting to read file: {} (full path: {})", path, full_path.display());
+        debug!("Working directory: {}", self.working_directory.display());
         
         // Check if file exists first
         if !full_path.exists() {
@@ -184,14 +184,14 @@ impl ToolExecutor {
                 path, full_path.display()
             ))?;
         
-        info!("Successfully read file: {} ({} bytes)", full_path.display(), content.len());
+        debug!("Successfully read file: {} ({} bytes)", full_path.display(), content.len());
         Ok(format!("File content of {}:\n{}", path, content))
     }
     
     async fn execute_git_command_typed(&mut self, args: GitCommandArgs) -> Result<String> {
         let command = &args.command;
         
-        info!("Executing git command: git {}", command);
+        debug!("Executing git command: git {}", command);
         
         let parts = shellwords::split(command)
             .context("Failed to parse git command")?;
@@ -255,7 +255,7 @@ impl ToolExecutor {
             }
         }
         
-        info!("Analyzed code file: {}", full_path.display());
+        debug!("Analyzed code file: {}", full_path.display());
         Ok(analysis)
     }
     
@@ -321,7 +321,7 @@ impl ToolExecutor {
         tokio::fs::write(&full_path, content).await
             .context("Failed to write file")?;
         
-        info!("Written file: {}", full_path.display());
+        debug!("Written file: {}", full_path.display());
         Ok(format!("Successfully wrote {} bytes to {}", content.len(), path))
     }
     
@@ -332,8 +332,8 @@ impl ToolExecutor {
         
         let full_path = self.working_directory.join(path);
         
-        info!("Attempting to read file: {} (full path: {})", path, full_path.display());
-        info!("Working directory: {}", self.working_directory.display());
+        debug!("Attempting to read file: {} (full path: {})", path, full_path.display());
+        debug!("Working directory: {}", self.working_directory.display());
         
         // Check if file exists first
         if !full_path.exists() {
@@ -358,7 +358,7 @@ impl ToolExecutor {
                 path, full_path.display()
             ))?;
         
-        info!("Successfully read file: {} ({} bytes)", full_path.display(), content.len());
+        debug!("Successfully read file: {} ({} bytes)", full_path.display(), content.len());
         Ok(format!("File content of {}:\n{}", path, content))
     }
     
@@ -367,7 +367,7 @@ impl ToolExecutor {
             .and_then(|v| v.as_str())
             .context("Missing 'command' argument")?;
         
-        info!("Executing git command: git {}", command);
+        debug!("Executing git command: git {}", command);
         
         let parts = shellwords::split(command)
             .context("Failed to parse git command")?;
@@ -433,7 +433,7 @@ impl ToolExecutor {
             }
         }
         
-        info!("Analyzed code file: {}", full_path.display());
+        debug!("Analyzed code file: {}", full_path.display());
         Ok(analysis)
     }
     
@@ -481,7 +481,7 @@ impl ToolExecutor {
     
     pub fn set_working_directory(&mut self, path: std::path::PathBuf) {
         self.working_directory = path;
-        info!("Changed working directory to: {}", self.working_directory.display());
+        debug!("Changed working directory to: {}", self.working_directory.display());
     }
     
     pub fn get_working_directory(&self) -> &std::path::Path {
