@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn, info};
 
 use crate::config::Config;
+use crate::repository_context::RepositoryContext;
+use crate::lsp_context::LspContextInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelType {
@@ -36,16 +38,7 @@ impl ModelType {
         }
     }
     
-    pub fn description(&self) -> String {
-        match self {
-            ModelType::Arbiter => "Default reasoning model (128K context)".to_string(),
-            ModelType::Templar => "Advanced reasoning model (128K context, >32GB RAM)".to_string(),
-            ModelType::Dragoon => "Default execution model (32K context)".to_string(),
-            ModelType::Immortal => "Advanced execution model (128K context, >32GB RAM)".to_string(),
-            ModelType::Observer => "Context summarization model (128K context)".to_string(),
-            ModelType::Custom(name) => format!("Custom model: {}", name),
-        }
-    }
+    // description method removed - was unused
     
     pub fn from_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
@@ -58,37 +51,45 @@ impl ModelType {
         }
     }
     
-    pub fn context_limit(&self) -> usize {
-        match self {
-            ModelType::Arbiter => 131072,    // 128K
-            ModelType::Templar => 131072,    // 128K
-            ModelType::Dragoon => 131072,    // 128K
-            ModelType::Immortal => 131072,   // 128K
-            ModelType::Observer => 131072,   // 128K
-            ModelType::Custom(_) => 8192,    // Default for custom models
-        }
+    pub fn calculate_dynamic_context(&self, estimated_tokens: usize) -> usize {
+        // Apply safety margin (use 75% of context for conversation)
+        let needed_context = (estimated_tokens as f64 / 0.75) as usize;
+        
+        // Determine model characteristics for context scaling
+        let is_observer_like = match self {
+            ModelType::Observer => true,
+            ModelType::Custom(name) => name.starts_with("observer"),
+            _ => false,
+        };
+        
+        let context_size = if is_observer_like {
+            // Observer model uses more conservative scaling due to smaller size
+            match needed_context {
+                0..=3072 => 4096,      // 4K (75% = 3K usable) - conservative start
+                3073..=6144 => 8192,   // 8K (75% = 6K usable)
+                6145..=12288 => 16384, // 16K (75% = 12K usable)
+                12289..=24576 => 32768, // 32K (75% = 24K usable)
+                _ => 65536,            // 64K max for observer (75% = 48K usable)
+            }
+        } else {
+            // Standard scaling for larger models
+            match needed_context {
+                0..=6144 => 8192,      // 8K (75% = 6K usable)
+                6145..=12288 => 16384,  // 16K (75% = 12K usable) 
+                12289..=24576 => 32768, // 32K (75% = 24K usable)
+                24577..=49152 => 65536, // 64K (75% = 48K usable)
+                _ => 131072,           // 128K max (75% = 96K usable)
+            }
+        };
+        
+        context_size
     }
     
-    pub fn requires_high_ram(&self) -> bool {
-        match self {
-            ModelType::Templar | ModelType::Immortal => true,
-            _ => false,
-        }
-    }
+    // requires_high_ram method removed - was unused
     
-    pub fn is_reasoning_model(&self) -> bool {
-        match self {
-            ModelType::Arbiter | ModelType::Templar => true,
-            _ => false,
-        }
-    }
+    // is_reasoning_model method removed - was unused
     
-    pub fn is_execution_model(&self) -> bool {
-        match self {
-            ModelType::Dragoon | ModelType::Immortal => true,
-            _ => false,
-        }
-    }
+    // is_execution_model method removed - was unused
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,13 +135,7 @@ impl OperationMode {
         }
     }
     
-    pub fn display_color(&self) -> crossterm::style::Color {
-        match self {
-            OperationMode::Arbiter => crossterm::style::Color::Magenta,
-            OperationMode::Plan => crossterm::style::Color::Green,
-            OperationMode::Act => crossterm::style::Color::Cyan,
-        }
-    }
+    // display_color method removed - was unused
 }
 
 #[derive(Debug, Clone)]
@@ -209,16 +204,19 @@ pub struct ParsedResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct AiClient {
     client: Client,
     config: Config,
     conversation_history: Vec<Message>,
     model_state: ModelState,
+    repository_context: Option<RepositoryContext>,
+    lsp_context: Option<LspContextInfo>,
+    context_token_budget: usize,
 }
 
 impl AiClient {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Result<Self> {
         // Validate that we have essential models available
         let has_arbiter = config.orchestration.models.iter().any(|m| m.name == "arbiter");
         let has_dragoon = config.orchestration.models.iter().any(|m| m.name == "dragoon");
@@ -227,18 +225,29 @@ impl AiClient {
             warn!("Neither reasoning (arbiter) nor execution (dragoon) models are configured. At least one should be available.");
         }
         
-        // Choose initial model based on what's available
-        let initial_model = if has_arbiter {
-            ModelType::Arbiter
-        } else if has_dragoon {
-            ModelType::Dragoon
+        // Choose initial model based on user configuration, with fallbacks
+        // Use the exact configured model name and map to proper ModelType
+        let configured_model = &config.user_model_selection.reasoning_model;
+        
+        let initial_model = if config.orchestration.models.iter().any(|m| m.name == *configured_model) {
+            // Model exists in config, map to proper ModelType
+            ModelType::from_name(configured_model)
         } else {
-            // Fallback to Arbiter even if not configured (will show error when used)
-            ModelType::Arbiter
+            // Fallback logic if configured model isn't available
+            warn!("Configured reasoning model '{}' is not available. Falling back to default.", configured_model);
+            if has_arbiter {
+                ModelType::Arbiter
+            } else if has_dragoon {
+                ModelType::Dragoon
+            } else {
+                ModelType::Arbiter // Final fallback
+            }
         };
         
+        info!("Selected initial model: {:?} for reasoning_model config: '{}'", initial_model, configured_model);
+        
         let ai_client = Self {
-            client: Client::new(),
+            client: Self::create_secure_client()?,
             config,
             conversation_history: Vec::new(),
             model_state: ModelState {
@@ -247,13 +256,38 @@ impl AiClient {
                 switch_count: 0,
                 last_switch_time: std::time::Instant::now(),
             },
+            repository_context: None,
+            lsp_context: None,
+            context_token_budget: 2048, // Default 2K tokens for context
         };
         
         info!("Initializing AI client with {} model ({})", 
               ai_client.model_state.current_model.model_name(),
               ai_client.get_current_model_server());
         
-        ai_client
+        Ok(ai_client)
+    }
+    
+    /// Create a secure HTTP client with proper timeout and security settings
+    fn create_secure_client() -> Result<Client> {
+        use std::time::Duration;
+        
+        Client::builder()
+            // Set reasonable timeouts to prevent hanging
+            .timeout(Duration::from_secs(120)) // 2 minutes total timeout
+            .connect_timeout(Duration::from_secs(30)) // 30 seconds to connect
+            
+            // Security settings - reqwest validates TLS by default
+            // .danger_accept_invalid_certs(false) is the default (secure) behavior
+            
+            // Size limits to prevent memory exhaustion
+            .redirect(reqwest::redirect::Policy::limited(10)) // Limit redirects
+            
+            // User agent for identification
+            .user_agent("Arbiter/1.0")
+            
+            .build()
+            .context("Failed to create secure HTTP client")
     }
     
     /// Switch to a different model if needed
@@ -352,7 +386,18 @@ impl AiClient {
             ModelType::Arbiter | ModelType::Templar => 0.7,           // Reasoning models - more creative
             ModelType::Dragoon | ModelType::Immortal => 0.15,         // Execution models - more precise  
             ModelType::Observer => 0.3,                               // Observer - balanced
-            ModelType::Custom(_) => 0.7,                              // Default for custom models
+            ModelType::Custom(name) => {
+                // Determine temperature based on model name patterns
+                if name.starts_with("observer") {
+                    0.3  // Observer-like models - balanced
+                } else if name.starts_with("dragoon") {
+                    0.15 // Execution-like models - more precise
+                } else if name.starts_with("arbiter") || name.starts_with("templar") || name.starts_with("immortal") {
+                    0.7  // Reasoning-like models - more creative
+                } else {
+                    0.7  // Default for unknown custom models
+                }
+            }
         }
     }
     
@@ -363,9 +408,16 @@ impl AiClient {
             .unwrap_or_else(|| "http://localhost:11434".to_string()) // Default server
     }
     
-    /// Get the current model context limit
+    /// Get the current model context limit (dynamically calculated)
     fn get_current_model_context_limit(&self) -> usize {
-        self.model_state.current_model.context_limit()
+        let current_tokens = self.estimate_token_count();
+        let dynamic_context = self.model_state.current_model.calculate_dynamic_context(current_tokens);
+        
+        // Log context size decisions for debugging
+        debug!("Dynamic context calculation: {} estimated tokens → {} context size", 
+               current_tokens, dynamic_context);
+        
+        dynamic_context
     }
     
     /// Set task phase and switch model if needed
@@ -441,7 +493,62 @@ impl AiClient {
         TaskPhase::Planning
     }
     
+    /// Set repository context for enhanced AI understanding
+    pub fn set_repository_context(&mut self, context: RepositoryContext) {
+        debug!("Setting repository context: {} files, {} symbols", context.file_count, context.total_symbols);
+        self.repository_context = Some(context);
+    }
+    
+    /// Set LSP context for real-time language analysis
+    pub fn set_lsp_context(&mut self, context: LspContextInfo) {
+        debug!("Setting LSP context: {} errors, {} warnings", context.error_count, context.warning_count);
+        self.lsp_context = Some(context);
+    }
+    
+    /// Set the token budget for repository and LSP context
+    pub fn set_context_token_budget(&mut self, budget: usize) {
+        debug!("Setting context token budget: {}", budget);
+        self.context_token_budget = budget;
+    }
+    
+    /// Add system message with optional repository and LSP context integration
     pub fn add_system_message(&mut self, content: &str) {
+        self.add_system_message_with_context(content, true);
+    }
+    
+    /// Add system message with control over context inclusion
+    pub fn add_system_message_with_context(&mut self, content: &str, include_context: bool) {
+        // Build enhanced system prompt with repository and LSP context
+        let mut system_parts = Vec::new();
+        
+        // Add repository context if available and requested
+        if include_context {
+            if let Some(ref repo_context) = self.repository_context {
+                if let Ok(repo_section) = self.build_repository_context_section(repo_context) {
+                    if !repo_section.is_empty() {
+                        system_parts.push(repo_section);
+                        debug!("Added repository context to system prompt");
+                    }
+                }
+            }
+            
+            // Add LSP context if available and requested
+            if let Some(ref lsp_context) = self.lsp_context {
+                if let Ok(lsp_section) = self.build_lsp_context_section(lsp_context) {
+                    if !lsp_section.is_empty() {
+                        system_parts.push(lsp_section);
+                        debug!("Added LSP context to system prompt");
+                    }
+                }
+            }
+        }
+        
+        // Add the main content
+        system_parts.push(content.to_string());
+        
+        // Combine all parts
+        let enhanced_content = system_parts.join("\n\n");
+        
         // Add system prompt that instructs the model to use XML format
         let system_content = format!(
             r#"{}
@@ -542,13 +649,65 @@ The user wants to check the git status. I'll use git_command to see what changes
 Let me check the current git status of your repository.
 
 <tool_call name="git_command">status</tool_call>"#,
-            content
+            enhanced_content
         );
         
         self.conversation_history.push(Message {
             role: "system".to_string(),
             content: system_content,
         });
+    }
+    
+    /// Build repository context section for system prompt
+    fn build_repository_context_section(&self, repo_context: &RepositoryContext) -> anyhow::Result<String> {
+        use crate::repository_context::RepositoryContextManager;
+        
+        // Calculate available tokens (reserve some for LSP context)
+        let available_tokens = if self.lsp_context.is_some() {
+            self.context_token_budget / 2  // Split between repo and LSP
+        } else {
+            self.context_token_budget      // Use all for repository
+        };
+        
+        // Create a temporary manager to format the context
+        // Note: This is a simplified approach - in production we'd pass the manager instance
+        let temp_manager = RepositoryContextManager::new(None)?;
+        let formatted_context = temp_manager.get_context_for_token_limit(repo_context, available_tokens)?;
+        
+        if formatted_context.trim().is_empty() {
+            return Ok(String::new());
+        }
+        
+        Ok(format!(
+            "# REPOSITORY CONTEXT\n{}\n---\n",
+            formatted_context
+        ))
+    }
+    
+    /// Build LSP context section for system prompt
+    fn build_lsp_context_section(&self, lsp_context: &LspContextInfo) -> anyhow::Result<String> {
+        use crate::lsp_context::LspContextExtractor;
+        
+        // Calculate available tokens (reserve some for repository context)
+        let available_tokens = if self.repository_context.is_some() {
+            self.context_token_budget / 2  // Split between repo and LSP
+        } else {
+            self.context_token_budget      // Use all for LSP
+        };
+        
+        // Create a temporary extractor to format the context
+        // Note: This is a simplified approach - in production we'd pass the extractor instance
+        let temp_extractor = LspContextExtractor::new(self.config.clone(), None)?;
+        let formatted_context = temp_extractor.format_context_for_prompt(lsp_context, available_tokens)?;
+        
+        if formatted_context.trim().is_empty() {
+            return Ok(String::new());
+        }
+        
+        Ok(format!(
+            "# LANGUAGE SERVER ANALYSIS\n{}\n---\n",
+            formatted_context
+        ))
     }
     
     pub fn add_user_message(&mut self, content: &str) {
@@ -631,7 +790,7 @@ Let me check the current git status of your repository.
             stream: false,
             options: OllamaOptions {
                 temperature: 0.3, // Observer model temperature
-                num_ctx: ModelType::Observer.context_limit(),
+                num_ctx: ModelType::Observer.calculate_dynamic_context(0), // Start with minimal context for quick response
                 num_predict: 2048,
             },
         };
@@ -663,22 +822,31 @@ Let me check the current git status of your repository.
             self.add_user_message(user_input);
         }
         
-        // Compress context if we're approaching limits (use 80% of model's context)
-        let dynamic_context_limit = (self.get_current_model_context_limit() as f64 * 0.8) as usize;
-        if self.estimate_token_count() > dynamic_context_limit {
+        // Compress context if we're approaching limits (use 75% of dynamic context)
+        let dynamic_context = self.get_current_model_context_limit();
+        let compression_threshold = (dynamic_context as f64 * 0.75) as usize;
+        let current_tokens = self.estimate_token_count();
+        
+        if current_tokens > compression_threshold {
+            info!("Compressing conversation: {} tokens exceeds {}% of {} context limit", 
+                  current_tokens, 75, dynamic_context);
             self.compress_conversation_context();
         }
         
+        let dynamic_context = self.get_current_model_context_limit();
         let request = OllamaRequest {
             model: self.get_current_model_name(),
             messages: self.conversation_history.clone(),
             stream: true,
             options: OllamaOptions {
                 temperature: self.get_current_model_temperature(),
-                num_ctx: self.get_current_model_context_limit(),
+                num_ctx: dynamic_context,
                 num_predict: 4096, // Standard token limit for generation
             },
         };
+        
+        info!("Sending request with dynamic context size: {} tokens for {} estimated conversation tokens", 
+              dynamic_context, self.estimate_token_count());
         
         let server_endpoint = self.get_current_model_server();
         debug!("Sending streaming request to {} using {} model: {:?}", 
@@ -769,12 +937,71 @@ Let me check the current git status of your repository.
     
     /// Estimate token count for conversation history
     fn estimate_token_count(&self) -> usize {
-        // Rough estimation: ~4 characters per token
-        let total_chars: usize = self.conversation_history
-            .iter()
-            .map(|msg| msg.content.len())
-            .sum();
-        total_chars / 4
+        // More accurate token estimation based on text analysis
+        let mut total_tokens = 0;
+        
+        for msg in &self.conversation_history {
+            total_tokens += Self::estimate_text_tokens(&msg.content);
+            // Add overhead for message structure (role, formatting, etc.)
+            total_tokens += 10; // JSON structure overhead per message
+        }
+        
+        total_tokens
+    }
+    
+    /// Estimate tokens for a piece of text using linguistic analysis
+    fn estimate_text_tokens(text: &str) -> usize {
+        let mut tokens = 0;
+        let mut chars = text.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch.is_whitespace() {
+                // Skip whitespace, but count word boundaries
+                continue;
+            } else if ch.is_alphabetic() {
+                // Count words (sequences of alphabetic characters)
+                tokens += 1;
+                while let Some(&next_ch) = chars.peek() {
+                    if next_ch.is_alphabetic() || next_ch == '\'' {
+                        chars.next(); // consume character
+                    } else {
+                        break;
+                    }
+                }
+            } else if ch.is_numeric() {
+                // Count numbers
+                tokens += 1;
+                while let Some(&next_ch) = chars.peek() {
+                    if next_ch.is_numeric() || next_ch == '.' {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            } else if ch.is_ascii_punctuation() {
+                // Most punctuation is its own token
+                tokens += 1;
+                
+                // Handle multi-character operators/symbols
+                if ch == '=' || ch == '!' || ch == '<' || ch == '>' || ch == ':' {
+                    if let Some(&next_ch) = chars.peek() {
+                        if next_ch == '=' {
+                            chars.next(); // consume the second '='
+                        }
+                    }
+                }
+            } else {
+                // Unicode, emojis, special characters - often 1-2 tokens each
+                tokens += if ch.len_utf8() > 1 { 2 } else { 1 };
+            }
+        }
+        
+        // Ensure minimum of 1 token for non-empty text
+        if tokens == 0 && !text.is_empty() {
+            tokens = 1;
+        }
+        
+        tokens
     }
     
     /// Intelligently compress conversation context when approaching limits
@@ -783,7 +1010,7 @@ Let me check the current git status of your repository.
             return; // Keep minimum context
         }
         
-        let target_token_limit = (self.get_current_model_context_limit() as f64 * 0.7) as usize; // Use 70% to leave room for response
+        let target_token_limit = (self.get_current_model_context_limit() as f64 * 0.6) as usize; // Use 60% after compression to leave room for response
         let current_tokens = self.estimate_token_count();
         
         info!("Compressing conversation context from {} messages ({} tokens) to fit within {} tokens", 

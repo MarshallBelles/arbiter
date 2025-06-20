@@ -1,11 +1,10 @@
 use anyhow::{Result, Context};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton},
+    // unused imports removed: DisableMouseCapture, EnableMouseCapture, execute, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen
 };
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
+    backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -15,10 +14,10 @@ use ratatui::{
 use std::io;
 use tracing::{debug, error, info};
 
-use crate::ai::{AiClient, StreamEvent, ToolCall, TaskPhase, ModelType, OperationMode};
+use crate::ai::{AiClient, StreamEvent, ToolCall, TaskPhase, OperationMode};
 use crate::config::Config;
 use crate::tools::ToolExecutor;
-use crate::completion::{CompletionEngine, Completion, CompletionType};
+use crate::completion::CompletionEngine;
 use crate::input_handler::{InputHandler, InputResult};
 
 #[derive(Debug, PartialEq)]
@@ -107,7 +106,7 @@ pub struct Shell {
     ai_client: AiClient,
     tool_executor: ToolExecutor,
     config: Config,
-    task_state: Option<TaskState>,
+    // task_state removed - was unused
     recent_commands: Vec<String>,
     completion_engine: CompletionEngine,
     operation_mode: OperationMode,
@@ -115,7 +114,7 @@ pub struct Shell {
 
 impl Shell {
     pub async fn new(config: Config) -> Result<Self> {
-        let mut ai_client = AiClient::new(config.clone());
+        let mut ai_client = AiClient::new(config.clone())?;
         
         // Initialize with system message
         ai_client.add_system_message(
@@ -165,7 +164,7 @@ Always be helpful, professional, and focused on empowering the user's developmen
             ai_client,
             tool_executor: ToolExecutor::new(),
             config,
-            task_state: None,
+            // task_state removed - was unused
             recent_commands: Vec::new(),
             completion_engine,
             operation_mode: OperationMode::Arbiter,
@@ -1728,7 +1727,7 @@ mod tests {
         let shell = Shell::new(config.clone()).await;
         
         assert!(shell.is_ok());
-        let shell = shell.unwrap();
+        let _shell = shell.unwrap();
         // Shell should be properly initialized with config
         // We can't directly access private fields, but we can test that it was created
     }
@@ -1983,8 +1982,8 @@ mod tests {
     async fn test_shell_creation_with_custom_config() {
         let mut config = Config::default();
         config.user_model_selection.reasoning_model = "custom-model".to_string();
-        config.orchestration.arbiter_model.server = "http://custom:8080".to_string();
-        config.orchestration.arbiter_model.temperature = 0.5;
+        // Update orchestration config for new structure
+        config.orchestration.models[0].server = "http://custom:8080".to_string();
         
         let shell = Shell::new(config).await;
         assert!(shell.is_ok());

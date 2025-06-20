@@ -359,7 +359,8 @@ mod tests {
         
         assert_eq!(config.user_model_selection.reasoning_model, "arbiter");
         assert_eq!(config.user_model_selection.execution_model, "dragoon");
-        assert_eq!(config.orchestration.arbiter_model.server, "http://localhost:11434");
+        assert!(!config.orchestration.models.is_empty());
+        assert_eq!(config.orchestration.models[0].server, "http://localhost:11434");
         assert_eq!(config.lsp_servers.len(), 10);
         
         // Check some key language servers
@@ -394,7 +395,7 @@ mod tests {
         // Test deserialization from TOML
         let deserialized: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(deserialized.user_model_selection.reasoning_model, config.user_model_selection.reasoning_model);
-        assert_eq!(deserialized.orchestration.arbiter_model.server, config.orchestration.arbiter_model.server);
+        assert_eq!(deserialized.orchestration.models[0].server, config.orchestration.models[0].server);
         assert_eq!(deserialized.lsp_servers.len(), config.lsp_servers.len());
     }
 
@@ -413,7 +414,7 @@ mod tests {
         
         assert_eq!(loaded_config.user_model_selection.reasoning_model, "arbiter");
         assert_eq!(loaded_config.user_model_selection.execution_model, "dragoon");
-        assert_eq!(loaded_config.orchestration.arbiter_model.server, "http://localhost:11434");
+        assert_eq!(loaded_config.orchestration.models[0].server, "http://localhost:11434");
     }
 
     #[test]
@@ -484,7 +485,7 @@ mod tests {
         let cloned = config.clone();
         
         assert_eq!(config.user_model_selection.reasoning_model, cloned.user_model_selection.reasoning_model);
-        assert_eq!(config.orchestration.arbiter_model.server, cloned.orchestration.arbiter_model.server);
+        assert_eq!(config.orchestration.models[0].server, cloned.orchestration.models[0].server);
         assert_eq!(config.lsp_servers.len(), cloned.lsp_servers.len());
     }
 
@@ -550,8 +551,7 @@ mod tests {
         let config = Config::default();
         
         // Verify reasonable parameter ranges
-        assert!(config.orchestration.arbiter_model.temperature >= 0.0 && config.orchestration.arbiter_model.temperature <= 2.0);
         assert!(!config.user_model_selection.reasoning_model.is_empty());
-        assert!(config.orchestration.arbiter_model.server.starts_with("http"));
+        assert!(config.orchestration.models[0].server.starts_with("http"));
     }
 }

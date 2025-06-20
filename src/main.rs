@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, Context};
 use clap::Parser;
 use std::io::{self, IsTerminal, Read};
 use tracing::info;
@@ -8,10 +8,12 @@ mod shell;
 mod ai;
 mod tree_sitter_support;
 mod lsp;
+mod lsp_context;
 mod tools;
 mod tool_args;
 mod completion;
 mod input_handler;
+mod repository_context;
 
 use config::Config;
 use shell::Shell;
@@ -50,6 +52,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Determine config path that will be used (same logic as Config::load)
+    let _config_path = match cli.config.as_deref() {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            let config_dir = dirs::config_dir()
+                .context("Could not find config directory")?
+                .join("arbiter");
+            config_dir.join("config.toml")
+        }
+    };
+    
     // Load configuration
     let config = Config::load(cli.config.as_deref())?;
     

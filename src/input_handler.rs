@@ -4,12 +4,10 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{self, Clear, ClearType},
-    ExecutableCommand, QueueableCommand,
+    ExecutableCommand,
 };
 use std::io::{self, Write};
 use std::collections::VecDeque;
-use std::time::Duration;
-use tracing::debug;
 
 use crate::completion::{Completion, CompletionEngine};
 

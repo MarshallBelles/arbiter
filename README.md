@@ -1,20 +1,30 @@
 # Arbiter - AI-Powered Command-Line Assistant
 
-Arbiter is an ULTRA-lightweight AI-powered command-line assistant and peer-programmer that runs locally using Ollama. Designed as your intelligent terminal companion, Arbiter provides seamless integration with your development workflow through natural command-line interaction, professional terminal styling, and direct access to your file system and development tools.
+Arbiter is an ULTRA-lightweight AI-powered command-line assistant and peer-programmer featuring a sophisticated multi-agent orchestration system that runs locally using Ollama. Designed as your intelligent terminal companion, Arbiter provides seamless integration with your development workflow through natural command-line interaction, professional terminal styling, and direct access to your file system and development tools.
+
+Featuring **5 specialized AI models** that work together intelligently:
+- **Arbiter** (DeepSeek-R1, 128K) - Default reasoning and planning
+- **Dragoon** (Qwen2.5-Coder-14B, 32K) - Default execution and coding
+- **Templar** (Qwen3-30B-A3B, 128K) - Advanced reasoning (requires >32GB RAM)
+- **Immortal** (Devstral-Small-2505, 128K) - Advanced execution (requires >32GB RAM)
+- **Observer** (Gemma-3-4B, 128K) - Context summarization and monitoring
 
 ## Features
 
-🤖 **Local AI Model Support**: Runs the fine-tuned `arbiter1.0` model based on Xiaomi's MiMo-VL-7B-RL  
+🤖 **Multi-Agent Orchestration**: 5 specialized AI models working together (Arbiter, Dragoon, Templar, Immortal, Observer)  
+🧠 **Intelligent Task Routing**: Automatic model selection based on task phase (Planning, Execution, Evaluation, Completion)  
 🖥️ **Professional Console Interface**: Beautiful console-based interaction with native terminal text selection  
 🌈 **Professional ANSI Colors**: Clean, readable terminal output with optimized color schemes  
 🌳 **Tree-sitter Integration**: Built-in code parsing framework for Rust, Java, JS/TS, C#, C++, Go, Python, Zig  
-📡 **Language Server Protocol**: Embedded LSP support for intelligent code completion and analysis  
+📡 **LSP Context Extraction**: Advanced Language Server Protocol integration with workspace analysis  
+📁 **Repository Context Management**: Intelligent codebase understanding and symbol tracking  
 ⚡ **Real-time Streaming**: XML-based streaming responses with live tool execution feedback  
 🔧 **Smart Command Detection**: Automatic detection of shell vs AI commands with helpful guidance  
 📝 **Multiple Input Modes**: Interactive console, direct prompts, or stdin pipes  
 🖱️ **Native Terminal Features**: Full mouse support for text selection, copy/paste, and scrolling  
 ⚠️ **Interactive Command Guidance**: Smart detection and alternatives for unsupported interactive/streaming commands  
 🔄 **Agentic Loop**: Continuous tool execution with result analysis and follow-up actions  
+🌐 **Multi-Endpoint Support**: Distribute models across multiple Mac Minis or servers  
 ⚙️ **Auto-Configuration**: Automatic config file creation with sensible defaults  
 
 ## Quick Start
@@ -42,16 +52,19 @@ cd arbiter
 cargo build --release
 ```
 
-3. Set up the model:
+3. Set up the AI models:
 ```bash
-# Download the model file (MiMo-VL-7B-RL GGUF)
-wget https://huggingface.co/unsloth/MiMo-VL-7B-RL-GGUF/resolve/main/MiMo-VL-7B-RL-UD-Q4_K_XL.gguf -O ARBITER10.gguf
+# Core models (recommended for all setups)
+ollama create arbiter -f models/Modelfile.arbiter     # Reasoning model
+ollama create dragoon -f models/Modelfile.dragoon    # Execution model  
+ollama create observer -f models/Modelfile.observer  # Context summarization
 
-# Create the model in Ollama
-ollama create arbiter1.0 -f Modelfile.arbiter1.0
+# Advanced models (optional, requires >32GB RAM)
+ollama create templar -f models/Modelfile.templar    # Advanced reasoning
+ollama create immortal -f models/Modelfile.immortal  # Advanced execution
 
 # Verify model installation
-ollama list | grep arbiter1.0
+ollama list
 ```
 
 4. Install the binary (optional):
@@ -114,11 +127,30 @@ git diff | arbiter "Review these changes"
 Arbiter automatically creates a configuration file at `~/.config/arbiter/config.toml` with optimized defaults:
 
 ```toml
-model = "arbiter1.0"
+# Model orchestration configuration
+[orchestration]
+enabled = true
+max_iterations = 10
+model_switch_cooldown_ms = 500
+
+# Model entries with their endpoints
+[[orchestration.models]]
+name = "arbiter"
 server = "http://localhost:11434"
-context_size = 31000
-temperature = 0.7
-max_tokens = 4096
+
+[[orchestration.models]]
+name = "dragoon"
+server = "http://localhost:11434"
+
+[[orchestration.models]]
+name = "observer"
+server = "http://localhost:11434"
+
+# User model preferences
+[user_model_selection]
+reasoning_model = "arbiter"
+execution_model = "dragoon"
+observer_model = "observer"
 
 [[lsp_servers]]
 language = "rust"
@@ -162,6 +194,30 @@ args = []
 arbiter "edit config"
 ```
 
+### Multi-Endpoint Configuration
+
+Arbiter supports distributing AI models across multiple machines for optimal performance:
+
+```toml
+# Example: Run different models on different Mac Minis
+[orchestration]
+enabled = true
+
+[[orchestration.models]]
+name = "arbiter"
+server = "http://192.168.1.100:11434"  # Mac Mini #1
+
+[[orchestration.models]]
+name = "dragoon"
+server = "http://192.168.1.101:11434"  # Mac Mini #2
+
+[[orchestration.models]]
+name = "observer"
+server = "http://localhost:11434"      # Local machine
+```
+
+See [Multi-Endpoint Setup Guide](README_MULTI_ENDPOINT.md) for detailed configuration instructions.
+
 ### Command Line Options
 
 ```bash
@@ -176,7 +232,18 @@ Options:
 
 ## How Arbiter Works
 
-Arbiter provides a seamless terminal experience that intelligently distinguishes between shell commands and AI requests:
+Arbiter provides a seamless terminal experience powered by a **multi-agent orchestration system** that intelligently routes tasks between specialized AI models and distinguishes between shell commands and AI requests:
+
+### Multi-Agent Architecture
+
+Arbiter automatically selects the best model for each task phase:
+
+- **Planning Phase** → **Arbiter** (reasoning model) for complex analysis and task decomposition
+- **Execution Phase** → **Dragoon** (execution model) for precise tool calls and code generation  
+- **Evaluation Phase** → **Arbiter** (reasoning model) for result analysis and next step planning
+- **Completion Phase** → **Arbiter** (reasoning model) for final summary and termination
+
+The **Observer** model provides context summarization when conversations become too long, ensuring optimal performance across all phases.
 
 ### Shell Commands
 Common commands execute directly with clean output:
@@ -192,17 +259,20 @@ Your branch is up to date with 'origin/main'.
 ```
 
 ### AI Interactions
-Natural language requests are processed by the AI:
+Natural language requests are processed by the appropriate AI model:
 ```bash
 (Arbiter) user@host$ create a python script for fibonacci numbers
-[thinking: I need to create a Python file with a fibonacci function]
+🧠 Arbiter (Planning): [thinking: I need to analyze this request and plan the implementation]
 
+🔄 Switching to Dragoon (Execution) for implementation...
+
+⚡ Dragoon (Execution): 
 ▶ Executing write_file with args: fibonacci.py
 ┌─ Tool output:
 File 'fibonacci.py' created successfully
 └─
 
-I've created a Python script that calculates Fibonacci numbers...
+🧠 Arbiter (Evaluation): I've successfully created a Python script that calculates Fibonacci numbers...
 ```
 
 ### Interactive Command Guidance
@@ -237,32 +307,36 @@ For now, please use non-streaming alternatives:
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ Console Shell   │◄──►│   AI Client     │◄──►│     Ollama      │
-│ (Ratatui/Mouse) │    │ (XML Stream +   │    │   (arbiter1.0)  │
-│                 │    │  Agentic Loop)  │    │                 │
+│ Console Shell   │◄──►│Multi-Agent      │◄──►│   Ollama Farm   │
+│ (Ratatui/Mouse) │    │Orchestrator     │    │ (5 Specialized  │
+│                 │    │ (Task Routing)  │    │    Models)      │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐
-│ Tool Executor   │    │ Tree-sitter +   │
-│ (Enhanced Shell │    │ LSP Manager     │
-│  + Interactive  │    │ (Multi-language)│
-│   Detection)    │    │                 │
-└─────────────────┘    └─────────────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐
-│ Configuration   │    │ Model Config    │
-│ Management      │    │ (31K context +  │
-│ (Auto-create)   │    │  Tool Docs)     │
-└─────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│ Tool Executor   │    │ Context Managers│    │ Model Endpoints │
+│ (Enhanced Shell │    │ • LSP Context   │    │ • localhost     │
+│  + Interactive  │    │ • Repository    │    │ • Multi-machine │
+│   Detection)    │    │ • Task Phase    │    │ • Load Balance  │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│ Configuration   │    │ XML Streaming   │    │ Dynamic Context │
+│ Management      │    │ + Agentic Loop  │    │ (8K-128K auto)  │
+│ (Auto-create)   │    │ (Real-time)     │    │                 │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
 Key architectural improvements:
+- **Multi-agent orchestration**: 5 specialized models with intelligent task routing
 - **Professional console interface**: Native terminal text selection with mouse support
 - **Agentic execution loop**: Continuous tool execution with result analysis
+- **Enhanced context management**: LSP integration and repository understanding
+- **Dynamic model selection**: Automatic routing based on task complexity and phase
+- **Multi-endpoint support**: Distribute models across multiple machines
 - **Enhanced tool detection**: Smart routing with interactive command guidance
-- **Professional ANSI colors**: Optimized terminal output for readability
+- **Professional ANSI colors**: Optimized terminal output with model identification
 - **Streaming responses**: Real-time AI responses with live tool execution feedback
 - **Comprehensive configuration**: Auto-generated config with hierarchical overrides
 
@@ -293,10 +367,17 @@ cargo check
 
 ### Model Customization
 
-The `Modelfile.arbiter1.0` contains the model configuration. Modify it to:
-- Adjust system prompts
-- Change model parameters  
-- Update response templates
+The specialized Modelfiles in `models/` contain optimized configurations for each model:
+- `models/Modelfile.arbiter` - Reasoning model configuration
+- `models/Modelfile.dragoon` - Execution model configuration
+- `models/Modelfile.observer` - Context summarization configuration
+- `models/Modelfile.templar` - Advanced reasoning (optional)
+- `models/Modelfile.immortal` - Advanced execution (optional)
+
+Modify these to:
+- Adjust system prompts for specific roles
+- Change model parameters for performance tuning
+- Update response templates for specialized tasks
 
 ## Examples
 
@@ -354,11 +435,17 @@ cat error.log | arbiter "Help me understand this error"
 
 ### Model Not Found
 ```bash
-# Verify model exists
+# Verify models exist
 ollama list
 
-# Recreate model if needed
-ollama create arbiter1.0 -f Modelfile.arbiter1.0
+# Recreate models if needed
+ollama create arbiter -f models/Modelfile.arbiter
+ollama create dragoon -f models/Modelfile.dragoon
+ollama create observer -f models/Modelfile.observer
+
+# For advanced models (optional, requires >32GB RAM)
+ollama create templar -f models/Modelfile.templar
+ollama create immortal -f models/Modelfile.immortal
 ```
 
 ### Interactive Commands Not Working
@@ -404,14 +491,20 @@ Arbiter uses your terminal's native text selection capabilities:
 
 ### Performance Issues
 ```bash
-# Check if model is loaded properly
+# Check if models are loaded properly
 ollama ps
 
 # Restart Ollama service if needed
 ollama serve
 
-# Verify model configuration
-ollama show arbiter1.0
+# Verify model configurations
+ollama show arbiter
+ollama show dragoon
+ollama show observer
+
+# Test multi-endpoint connectivity (if using multiple machines)
+curl http://192.168.1.100:11434/api/tags  # Test remote endpoint
+curl http://localhost:11434/api/tags       # Test local endpoint
 ```
 
 ## Contributing
@@ -431,4 +524,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Built with [Ollama](https://ollama.ai/) for local AI inference
 - [Tree-sitter](https://tree-sitter.github.io/) for code parsing
 - [Ratatui](https://ratatui.rs/) for the terminal interface
-- Based on Xiaomi's MiMo model architecture
+- Multi-agent system inspired by modern AI orchestration patterns
+- Specialized models: DeepSeek-R1, Qwen2.5-Coder, Qwen3-30B, Devstral, Gemma-3

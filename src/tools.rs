@@ -1,10 +1,12 @@
 use anyhow::{Result, Context};
 use serde_json::Value;
-use std::process::{Command, Stdio};
-use std::io::Write;
 use tokio::process::Command as TokioCommand;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
+// std::path::Path import removed - unused
 use crate::tool_args::*;
+use crate::config::Config;
+use crate::lsp_context::{LspContextExtractor, LspContextConfig};
+use crate::repository_context::{RepositoryContextManager, RepositoryContextConfig};
 
 #[derive(Clone)]
 pub struct ToolExecutor {
@@ -51,6 +53,21 @@ impl ToolExecutor {
                     .with_context(|| format!("Failed to parse debug_directory arguments: {}", raw_args))?;
                 self.debug_directory_typed(parsed_args).await
             }
+            "lsp_analysis" => {
+                let parsed_args = LspAnalysisArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse lsp_analysis arguments: {}", raw_args))?;
+                self.lsp_analysis_typed(parsed_args).await
+            }
+            "repository_analysis" => {
+                let parsed_args = RepositoryAnalysisArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse repository_analysis arguments: {}", raw_args))?;
+                self.repository_analysis_typed(parsed_args).await
+            }
+            "symbol_lookup" => {
+                let parsed_args = SymbolLookupArgs::parse(raw_args)
+                    .with_context(|| format!("Failed to parse symbol_lookup arguments: {}", raw_args))?;
+                self.symbol_lookup_typed(parsed_args).await
+            }
             _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
         }
     }
@@ -94,10 +111,13 @@ impl ToolExecutor {
             ));
         }
 
+        // Parse and validate command to prevent injection attacks
+        let parsed_command = self.parse_and_validate_command(command)?;
+        
         // Execute with proper shell for complex command support
         let mut cmd = TokioCommand::new(&shell);
         cmd.args(&shell_args)
-           .arg(command)
+           .arg(&parsed_command)
            .current_dir(&self.working_directory)
            .stdout(std::process::Stdio::piped())
            .stderr(std::process::Stdio::piped());
@@ -138,7 +158,8 @@ impl ToolExecutor {
         let path = &args.path;
         let content = &args.content;
         
-        let full_path = self.working_directory.join(path);
+        // Validate and secure the file path
+        let full_path = self.validate_and_secure_path(path)?;
         
         // Create parent directories if they don't exist
         if let Some(parent) = full_path.parent() {
@@ -156,7 +177,8 @@ impl ToolExecutor {
     async fn read_file_typed(&mut self, args: ReadFileArgs) -> Result<String> {
         let path = &args.path;
         
-        let full_path = self.working_directory.join(path);
+        // Validate and secure the file path
+        let full_path = self.validate_and_secure_path(path)?;
         
         debug!("Attempting to read file: {} (full path: {})", path, full_path.display());
         debug!("Working directory: {}", self.working_directory.display());
@@ -299,6 +321,256 @@ impl ToolExecutor {
         }
         
         Ok(debug_info)
+    }
+    
+    async fn lsp_analysis_typed(&mut self, args: LspAnalysisArgs) -> Result<String> {
+        debug!("Running LSP analysis with args: {:?}", args);
+        
+        // Load default config for LSP analysis
+        let config = Config::load(None)?;
+        let mut lsp_extractor = LspContextExtractor::new(config, Some(LspContextConfig::default()))?;
+        
+        let analysis_type = args.analysis_type.as_deref().unwrap_or("all");
+        
+        let context_info = if let Some(ref file_path) = args.path {
+            // Analyze specific file
+            let full_path = self.validate_and_secure_path(file_path)?;
+            
+            if !full_path.exists() {
+                return Err(anyhow::anyhow!("File does not exist: {}", file_path));
+            }
+            
+            let content = tokio::fs::read_to_string(&full_path).await
+                .context("Failed to read file for LSP analysis")?;
+            
+            info!("Analyzing file: {}", full_path.display());
+            lsp_extractor.extract_context_for_file(&full_path, &content).await?
+        } else {
+            // Analyze entire workspace
+            info!("Analyzing workspace: {}", self.working_directory.display());
+            lsp_extractor.extract_context_for_workspace(&self.working_directory).await?
+        };
+        
+        // Format the results based on analysis type
+        let mut result = String::new();
+        
+        match analysis_type {
+            "diagnostics" => {
+                result.push_str(&format!("# LSP Diagnostics Analysis\n"));
+                result.push_str(&format!("Errors: {} | Warnings: {} | Hints: {}\n\n", 
+                    context_info.error_count, context_info.warning_count, context_info.hint_count));
+                
+                if !context_info.workspace_diagnostics.is_empty() {
+                    result.push_str("## Workspace Diagnostics:\n");
+                    for (i, diagnostic) in context_info.workspace_diagnostics.iter().take(20).enumerate() {
+                        result.push_str(&format!("{}. {}:{} [{}] {}\n", 
+                            i + 1, diagnostic.file_path.display(), diagnostic.line + 1, 
+                            diagnostic.severity.to_uppercase(), diagnostic.message));
+                    }
+                    
+                    if context_info.workspace_diagnostics.len() > 20 {
+                        result.push_str(&format!("... and {} more diagnostics\n", 
+                            context_info.workspace_diagnostics.len() - 20));
+                    }
+                }
+            }
+            "hover" => {
+                result.push_str("# LSP Hover Information\n");
+                if let Some(ref file_info) = context_info.current_file_info {
+                    if let Some(ref hover) = file_info.hover_info {
+                        result.push_str(&format!("**File:** {}\n", file_info.file_path.display()));
+                        result.push_str(&format!("**Hover Info:** {}\n", hover));
+                    } else {
+                        result.push_str("No hover information available for this file.\n");
+                    }
+                } else {
+                    result.push_str("No file specified for hover analysis.\n");
+                }
+            }
+            "completions" => {
+                result.push_str("# LSP Completions\n");
+                if let Some(ref file_info) = context_info.current_file_info {
+                    if !file_info.available_completions.is_empty() {
+                        result.push_str(&format!("**File:** {}\n", file_info.file_path.display()));
+                        result.push_str(&format!("**Available Completions ({}):**\n", 
+                            file_info.available_completions.len()));
+                        for completion in &file_info.available_completions {
+                            result.push_str(&format!("- {}\n", completion));
+                        }
+                    } else {
+                        result.push_str("No completions available for this file.\n");
+                    }
+                } else {
+                    result.push_str("No file specified for completion analysis.\n");
+                }
+            }
+            _ => {
+                // "all" or any other value - show comprehensive analysis
+                result.push_str(&lsp_extractor.format_context_for_prompt(&context_info, 4096)?);
+            }
+        }
+        
+        // Shutdown LSP connections
+        lsp_extractor.shutdown().await?;
+        
+        debug!("LSP analysis completed");
+        Ok(result)
+    }
+    
+    async fn repository_analysis_typed(&mut self, args: RepositoryAnalysisArgs) -> Result<String> {
+        debug!("Running repository analysis with args: {:?}", args);
+        
+        let scope = args.scope.as_deref().unwrap_or("summary");
+        let max_tokens = args.max_tokens.unwrap_or(2048);
+        
+        let mut repo_manager = RepositoryContextManager::new(Some(RepositoryContextConfig {
+            max_tokens,
+            ..Default::default()
+        }))?;
+        
+        info!("Analyzing repository: {}", self.working_directory.display());
+        let context = repo_manager.get_repository_context(&self.working_directory).await?;
+        
+        let mut result = String::new();
+        
+        match scope {
+            "workspace" => {
+                // Comprehensive workspace analysis
+                result.push_str(&format!("# Repository Analysis: {}\n", context.project_name));
+                result.push_str(&format!("**Path:** {}\n", context.root_path.display()));
+                result.push_str(&format!("**Languages:** {}\n", context.languages.join(", ")));
+                result.push_str(&format!("**Files Analyzed:** {}\n", context.file_count));
+                result.push_str(&format!("**Total Symbols:** {}\n\n", context.total_symbols));
+                
+                // Show detailed symbol breakdown
+                result.push_str("## Symbol Breakdown:\n");
+                result.push_str(&format!("- Functions: {}\n", context.symbol_summary.functions.len()));
+                result.push_str(&format!("- Structs: {}\n", context.symbol_summary.structs.len()));
+                result.push_str(&format!("- Classes: {}\n", context.symbol_summary.classes.len()));
+                result.push_str(&format!("- Enums: {}\n", context.symbol_summary.enums.len()));
+                result.push_str(&format!("- Traits: {}\n", context.symbol_summary.traits.len()));
+                result.push_str(&format!("- Modules: {}\n", context.symbol_summary.modules.len()));
+                result.push_str(&format!("- Imports: {}\n\n", context.symbol_summary.imports.len()));
+                
+                // Show key files
+                if !context.key_files.is_empty() {
+                    result.push_str("## Key Files:\n");
+                    for file in &context.key_files {
+                        result.push_str(&format!("- {} ({} symbols)\n", 
+                            file.path.display(), file.symbols.len()));
+                    }
+                }
+            }
+            "files" => {
+                // File-focused analysis
+                result.push_str(&format!("# File Analysis: {}\n", context.project_name));
+                result.push_str(&format!("**Total Files:** {}\n\n", context.file_count));
+                
+                if !context.key_files.is_empty() {
+                    result.push_str("## Key Files:\n");
+                    for file in &context.key_files {
+                        result.push_str(&format!("**{}**\n", file.path.display()));
+                        result.push_str(&format!("- Language: {}\n", file.language));
+                        result.push_str(&format!("- Symbols: {}\n", file.symbols.len()));
+                        result.push_str(&format!("- Size: {} bytes\n\n", file.size_bytes));
+                    }
+                }
+            }
+            _ => {
+                // "summary" - use the smart context formatter
+                result = repo_manager.get_context_for_token_limit(&context, max_tokens)?;
+            }
+        }
+        
+        debug!("Repository analysis completed");
+        Ok(result)
+    }
+    
+    async fn symbol_lookup_typed(&mut self, args: SymbolLookupArgs) -> Result<String> {
+        debug!("Running symbol lookup with args: {:?}", args);
+        
+        let mut repo_manager = RepositoryContextManager::new(Some(RepositoryContextConfig::default()))?;
+        
+        info!("Looking up symbol '{}' in repository: {}", args.symbol_name, self.working_directory.display());
+        let context = repo_manager.get_repository_context(&self.working_directory).await?;
+        
+        let mut result = String::new();
+        result.push_str(&format!("# Symbol Lookup: '{}'\n", args.symbol_name));
+        
+        let mut found_symbols = Vec::new();
+        
+        // Search through all symbol types
+        let symbol_collections = [
+            (&context.symbol_summary.functions, "function"),
+            (&context.symbol_summary.structs, "struct"),
+            (&context.symbol_summary.classes, "class"),
+            (&context.symbol_summary.enums, "enum"),
+            (&context.symbol_summary.traits, "trait"),
+            (&context.symbol_summary.modules, "module"),
+            (&context.symbol_summary.imports, "import"),
+        ];
+        
+        for (symbols, symbol_type) in &symbol_collections {
+            // Filter by symbol type if specified
+            if let Some(ref filter_type) = args.symbol_type {
+                if filter_type != symbol_type {
+                    continue;
+                }
+            }
+            
+            for symbol in symbols.iter() {
+                // Check if symbol name matches (case-insensitive partial match)
+                if symbol.name.to_lowercase().contains(&args.symbol_name.to_lowercase()) {
+                    // Filter by file pattern if specified
+                    if let Some(ref pattern) = args.file_pattern {
+                        let file_name = symbol.file_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("");
+                        if !file_name.contains(pattern) {
+                            continue;
+                        }
+                    }
+                    
+                    found_symbols.push((symbol, *symbol_type));
+                }
+            }
+        }
+        
+        if found_symbols.is_empty() {
+            result.push_str(&format!("No symbols found matching '{}'\n", args.symbol_name));
+            
+            if let Some(ref symbol_type) = args.symbol_type {
+                result.push_str(&format!("(searched in {} symbols only)\n", symbol_type));
+            }
+            if let Some(ref pattern) = args.file_pattern {
+                result.push_str(&format!("(filtered by file pattern: {})\n", pattern));
+            }
+        } else {
+            result.push_str(&format!("Found {} symbol(s):\n\n", found_symbols.len()));
+            
+            // Group by symbol type
+            let mut current_type = "";
+            for (symbol, symbol_type) in &found_symbols {
+                if *symbol_type != current_type {
+                    result.push_str(&format!("## {}\n", symbol_type.to_uppercase()));
+                    current_type = symbol_type;
+                }
+                
+                result.push_str(&format!("- **{}** ({}:{})\n", 
+                    symbol.name, symbol.file_path.display(), symbol.line + 1));
+            }
+            
+            // Add summary
+            result.push_str(&format!("\n**Summary:** {} matches across {} file(s)\n", 
+                found_symbols.len(),
+                found_symbols.iter()
+                    .map(|(s, _)| &s.file_path)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()));
+        }
+        
+        debug!("Symbol lookup completed");
+        Ok(result)
     }
     
     async fn write_file(&mut self, args: &Value) -> Result<String> {
@@ -506,7 +778,7 @@ impl ToolExecutor {
     
     /// Handle cd command by updating working directory
     async fn handle_cd_command(&mut self, path: &str) -> Result<String> {
-        use std::path::Path;
+        
         
         let target_path = if path == "~" {
             // Handle home directory
@@ -717,6 +989,151 @@ impl ToolExecutor {
                 ))
             }
         }
+    }
+    
+    /// Validate and secure file path to prevent directory traversal attacks
+    fn validate_and_secure_path(&self, path: &str) -> Result<std::path::PathBuf> {
+        // Basic validation checks
+        if path.trim().is_empty() {
+            return Err(anyhow::anyhow!("File path cannot be empty"));
+        }
+        
+        // Check for null bytes which could cause issues
+        if path.contains('\0') {
+            return Err(anyhow::anyhow!("File path cannot contain null bytes"));
+        }
+        
+        // Check for length limits
+        if path.len() > 4096 {
+            return Err(anyhow::anyhow!("File path too long (max 4096 characters)"));
+        }
+        
+        // Check for dangerous patterns that could indicate traversal attempts
+        let dangerous_patterns = [
+            "..", "~/../", "\\..\\", "/../../", "/..", "\\..\\",
+            "../", "..\\", ".../", "...\\", "....", "..;",
+        ];
+        
+        for pattern in &dangerous_patterns {
+            if path.contains(pattern) {
+                return Err(anyhow::anyhow!(
+                    "File path contains dangerous pattern '{}' which could be used for directory traversal",
+                    pattern
+                ));
+            }
+        }
+        
+        // Check for absolute paths outside the working directory
+        let input_path = std::path::Path::new(path);
+        let full_path = if input_path.is_absolute() {
+            // For absolute paths, ensure they're within a safe directory
+            // For now, we'll be restrictive and only allow relative paths
+            return Err(anyhow::anyhow!(
+                "Absolute paths are not allowed for security reasons. Use relative paths only."
+            ));
+        } else {
+            self.working_directory.join(path)
+        };
+        
+        // Canonicalize the path to resolve any remaining .. or . components
+        match full_path.canonicalize() {
+            Ok(canonical_path) => {
+                // Ensure the canonical path is still within our working directory
+                let canonical_working_dir = self.working_directory.canonicalize()
+                    .context("Failed to canonicalize working directory")?;
+                
+                if !canonical_path.starts_with(&canonical_working_dir) {
+                    return Err(anyhow::anyhow!(
+                        "File path resolves outside of working directory (potential directory traversal attack)"
+                    ));
+                }
+                
+                Ok(canonical_path)
+            }
+            Err(_) => {
+                // If canonicalization fails, the path might not exist yet (for write operations)
+                // In this case, validate the components manually
+                let mut components = Vec::new();
+                for component in input_path.components() {
+                    match component {
+                        std::path::Component::Normal(comp) => {
+                            components.push(comp.to_string_lossy().to_string());
+                        }
+                        std::path::Component::CurDir => {
+                            // Ignore current directory references
+                        }
+                        std::path::Component::ParentDir => {
+                            return Err(anyhow::anyhow!(
+                                "Parent directory references (..) are not allowed"
+                            ));
+                        }
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "Invalid path component detected"
+                            ));
+                        }
+                    }
+                }
+                
+                // Reconstruct the path without dangerous components
+                let safe_path = components.join("/");
+                Ok(self.working_directory.join(safe_path))
+            }
+        }
+    }
+    
+    /// Parse and validate command to prevent injection attacks
+    fn parse_and_validate_command(&self, command: &str) -> Result<String> {
+        // Basic validation checks
+        if command.trim().is_empty() {
+            return Err(anyhow::anyhow!("Command cannot be empty"));
+        }
+        
+        // Check for length limits to prevent extremely long commands
+        if command.len() > 10000 {
+            return Err(anyhow::anyhow!("Command too long (max 10000 characters)"));
+        }
+        
+        // Check for null bytes which could cause issues
+        if command.contains('\0') {
+            return Err(anyhow::anyhow!("Command cannot contain null bytes"));
+        }
+        
+        // Check for dangerous command injection patterns
+        let dangerous_patterns = [
+            ";", "&&", "||", "|", "`", "$(",
+            "$(", "${", ")", ">>", "<<", "&",
+            "\n", "\r"
+        ];
+        
+        for pattern in &dangerous_patterns {
+            if command.contains(pattern) {
+                return Err(anyhow::anyhow!(
+                    "Command contains potentially dangerous pattern '{}'. Use individual commands instead of chaining.",
+                    pattern
+                ));
+            }
+        }
+        
+        // Additional validation for specific dangerous commands
+        let cmd_lower = command.to_lowercase();
+        let dangerous_commands = [
+            "rm -rf /", "dd if=", ":(){ :|:& };:", 
+            "chmod 777", "chown", "sudo", "su ",
+            "/dev/", "mkfs", "fdisk", "format"
+        ];
+        
+        for dangerous_cmd in &dangerous_commands {
+            if cmd_lower.contains(dangerous_cmd) {
+                return Err(anyhow::anyhow!(
+                    "Command contains dangerous operation '{}' which is not allowed",
+                    dangerous_cmd
+                ));
+            }
+        }
+        
+        // Return the sanitized command - for now just trim whitespace
+        Ok(command.trim().to_string())
     }
 }
 
@@ -1105,5 +1522,389 @@ impl TestStruct {
         assert!(analysis_result.is_ok());
         let analysis_output = analysis_result.unwrap();
         assert!(analysis_output.contains("Lines: 3"));
+    }
+
+    // ========================================
+    // NEW ANALYSIS TOOLS TESTS - Phase 1
+    // ========================================
+
+    #[tokio::test]
+    async fn test_lsp_analysis_json_format() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create a Rust file for LSP analysis
+        let rust_content = r#"
+fn main() {
+    println!("Hello, world!");
+}
+
+struct TestStruct {
+    field: i32,
+}
+"#;
+        let file_path = temp_dir.path().join("test.rs");
+        std::fs::write(&file_path, rust_content).unwrap();
+        
+        let args = json!({
+            "path": "test.rs",
+            "analysis_type": "all"
+        });
+        
+        let result = executor.execute_tool("lsp_analysis", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("LSP Analysis") || output.contains("Errors:") || output.contains("Warnings:"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_analysis_text_format() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create a Rust file
+        let rust_content = "fn test() { println!(\"test\"); }";
+        let file_path = temp_dir.path().join("test.rs");
+        std::fs::write(&file_path, rust_content).unwrap();
+        
+        // Test text format: "path analysis_type"
+        let result = executor.execute_tool_with_raw_args("lsp_analysis", "test.rs diagnostics").await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("LSP Diagnostics") || output.contains("Errors:"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_analysis_workspace_mode() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test workspace analysis (no args)
+        let result = executor.execute_tool_with_raw_args("lsp_analysis", "").await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("LSP Analysis") || output.contains("workspace") || output.contains("Errors:"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_analysis_different_types() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create a test file
+        let file_path = temp_dir.path().join("test.py");
+        std::fs::write(&file_path, "def hello(): print('hello')").unwrap();
+        
+        // Test different analysis types
+        let analysis_types = ["diagnostics", "hover", "completions", "all"];
+        
+        for analysis_type in &analysis_types {
+            let args = json!({
+                "path": "test.py",
+                "analysis_type": analysis_type
+            });
+            
+            let result = executor.execute_tool("lsp_analysis", &args).await;
+            assert!(result.is_ok(), "Failed for analysis_type: {}", analysis_type);
+            let output = result.unwrap();
+            
+            match *analysis_type {
+                "diagnostics" => assert!(output.contains("LSP Diagnostics") || output.contains("Errors:")),
+                "hover" => assert!(output.contains("LSP Hover") || output.contains("Hover Info")),
+                "completions" => assert!(output.contains("LSP Completions") || output.contains("Completions")),
+                "all" => assert!(output.contains("LSP Analysis") || output.contains("Errors:")),
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lsp_analysis_invalid_path() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "path": "nonexistent_file.rs",
+            "analysis_type": "diagnostics"
+        });
+        
+        let result = executor.execute_tool("lsp_analysis", &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("File does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_analysis_invalid_analysis_type() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test invalid analysis type through raw args
+        let result = executor.execute_tool_with_raw_args("lsp_analysis", "test.rs invalid_type").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid analysis type"));
+    }
+
+    #[tokio::test]
+    async fn test_repository_analysis_json_format() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let args = json!({
+            "scope": "summary",
+            "max_tokens": 1024
+        });
+        
+        let result = executor.execute_tool("repository_analysis", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Repository") || output.contains("Files") || output.contains("Languages"));
+    }
+
+    #[tokio::test]
+    async fn test_repository_analysis_text_format() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test "scope max_tokens" format
+        let result = executor.execute_tool_with_raw_args("repository_analysis", "workspace 2048").await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Repository Analysis") || output.contains("workspace"));
+        
+        // Test just scope
+        let result = executor.execute_tool_with_raw_args("repository_analysis", "files").await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("File Analysis") || output.contains("Files"));
+        
+        // Test just number (interpreted as max_tokens)
+        let result = executor.execute_tool_with_raw_args("repository_analysis", "512").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_repository_analysis_all_scopes() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create some test files to analyze
+        std::fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(temp_dir.path().join("lib.rs"), "pub fn test() {}").unwrap();
+        
+        let scopes = ["workspace", "summary", "files"];
+        
+        for scope in &scopes {
+            let args = json!({
+                "scope": scope,
+                "max_tokens": 1024
+            });
+            
+            let result = executor.execute_tool("repository_analysis", &args).await;
+            assert!(result.is_ok(), "Failed for scope: {}", scope);
+            let output = result.unwrap();
+            
+            match *scope {
+                "workspace" => assert!(output.contains("Repository Analysis") && output.contains("Symbol Breakdown")),
+                "files" => assert!(output.contains("File Analysis")),
+                "summary" => assert!(output.contains("Repository Context") || output.contains("Languages") || output.contains("Files")),
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repository_analysis_default_behavior() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test empty args (should default to summary)
+        let result = executor.execute_tool_with_raw_args("repository_analysis", "").await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Repository Context") || output.contains("Languages") || output.contains("Files"));
+    }
+
+    #[tokio::test]
+    async fn test_repository_analysis_token_validation() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test invalid token limits
+        let invalid_tokens = ["0", "50001"];
+        
+        for tokens in &invalid_tokens {
+            let result = executor.execute_tool_with_raw_args("repository_analysis", &format!("summary {}", tokens)).await;
+            assert!(result.is_err(), "Should fail for tokens: {}", tokens);
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Max tokens") || error.contains("greater than 0") || error.contains("cannot exceed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repository_analysis_invalid_scope() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let result = executor.execute_tool_with_raw_args("repository_analysis", "invalid_scope 1024").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid scope"));
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_json_format() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create a test file with symbols
+        let rust_content = r#"
+fn main() {
+    println!("Hello, world!");
+}
+
+struct TestStruct {
+    field: i32,
+}
+
+enum TestEnum {
+    Variant1,
+    Variant2,
+}
+"#;
+        std::fs::write(temp_dir.path().join("test.rs"), rust_content).unwrap();
+        
+        let args = json!({
+            "symbol_name": "Test",
+            "symbol_type": "struct"
+        });
+        
+        let result = executor.execute_tool("symbol_lookup", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Symbol Lookup: 'Test'"));
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_text_format() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create test files
+        std::fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(temp_dir.path().join("lib.rs"), "fn helper() {}").unwrap();
+        
+        // Test different text formats
+        let formats = [
+            "main",                    // Just symbol name
+            "main function",           // Symbol name + type
+            "main function *.rs",      // Symbol name + type + file pattern
+        ];
+        
+        for format in &formats {
+            let result = executor.execute_tool_with_raw_args("symbol_lookup", format).await;
+            assert!(result.is_ok(), "Failed for format: {}", format);
+            let output = result.unwrap();
+            assert!(output.contains("Symbol Lookup:"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_by_type() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create a comprehensive test file
+        let rust_content = r#"
+fn main() {}
+fn helper() {}
+struct MyStruct {}
+enum MyEnum {}
+trait MyTrait {}
+mod my_module {}
+"#;
+        std::fs::write(temp_dir.path().join("test.rs"), rust_content).unwrap();
+        
+        let symbol_types = ["function", "struct", "enum", "trait", "module"];
+        
+        for symbol_type in &symbol_types {
+            let args = json!({
+                "symbol_name": "my",  // Should match multiple symbols
+                "symbol_type": symbol_type
+            });
+            
+            let result = executor.execute_tool("symbol_lookup", &args).await;
+            assert!(result.is_ok(), "Failed for symbol_type: {}", symbol_type);
+            let output = result.unwrap();
+            assert!(output.contains("Symbol Lookup: 'my'"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_file_pattern_filtering() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        // Create multiple files
+        std::fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(temp_dir.path().join("lib.rs"), "fn main() {}").unwrap();
+        std::fs::write(temp_dir.path().join("helper.py"), "def main(): pass").unwrap();
+        
+        // Search with file pattern
+        let args = json!({
+            "symbol_name": "main",
+            "file_pattern": "main.rs"
+        });
+        
+        let result = executor.execute_tool("symbol_lookup", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Symbol Lookup: 'main'"));
+        // Should find results since we have main() in main.rs
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_case_insensitive() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        std::fs::write(temp_dir.path().join("test.rs"), "fn TestFunction() {}").unwrap();
+        
+        // Test case-insensitive search
+        let args = json!({
+            "symbol_name": "testfunction"  // lowercase
+        });
+        
+        let result = executor.execute_tool("symbol_lookup", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Symbol Lookup: 'testfunction'"));
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_no_results() {
+        let (mut executor, temp_dir) = create_test_executor().await;
+        
+        std::fs::write(temp_dir.path().join("test.rs"), "fn main() {}").unwrap();
+        
+        // Search for non-existent symbol
+        let args = json!({
+            "symbol_name": "nonexistent_symbol"
+        });
+        
+        let result = executor.execute_tool("symbol_lookup", &args).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("No symbols found matching"));
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_empty_symbol_name() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test empty symbol name
+        let result = executor.execute_tool_with_raw_args("symbol_lookup", "").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Symbol name is required"));
+    }
+
+    #[tokio::test]
+    async fn test_symbol_lookup_invalid_symbol_type() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        let result = executor.execute_tool_with_raw_args("symbol_lookup", "test invalid_type").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid symbol type"));
+    }
+
+    #[tokio::test]
+    async fn test_new_tools_unknown_tool_error() {
+        let (mut executor, _temp_dir) = create_test_executor().await;
+        
+        // Test that unknown tools still return proper errors
+        let result = executor.execute_tool("unknown_analysis_tool", &json!({})).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown tool: unknown_analysis_tool"));
     }
 }

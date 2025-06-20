@@ -21,11 +21,10 @@ cargo test
 
 **Model Setup:**
 ```bash
-# Download the model file
-wget https://huggingface.co/unsloth/MiMo-VL-7B-RL-GGUF/resolve/main/MiMo-VL-7B-RL-UD-Q4_K_XL.gguf -O ARBITER10.gguf
-
-# Create model in Ollama
-ollama create arbiter1.0 -f Modelfile.arbiter1.0
+# Core models (recommended for all setups)
+ollama create arbiter -f models/Modelfile.arbiter     # DeepSeek-R1 (reasoning)
+ollama create dragoon -f models/Modelfile.dragoon    # Qwen2.5-Coder (execution)
+ollama create observer -f models/Modelfile.observer  # Gemma-3-4B (context)
 
 # Test model
 ollama list
@@ -87,9 +86,9 @@ Configuration follows a hierarchical override pattern:
 4. Special command `arbiter "edit config"` for direct configuration editing
 
 The config includes:
-- Model settings (arbiter1.0 by default)
-- Ollama server URL (http://localhost:11434)
-- Context size (31000 tokens) and temperature (0.7)
+- Multi-agent orchestration settings
+- Model endpoint configurations
+- Dynamic context sizing (8K-128K) and specialized temperatures
 - LSP server definitions for each supported language
 - Token limits and generation parameters
 
@@ -149,34 +148,96 @@ The tool system automatically detects interactive/streaming commands (like `tail
 
 ## Model Integration
 
-The `Modelfile.arbiter1.0` defines the comprehensive model configuration for Ollama:
-- Base model reference (MiMo GGUF file)
-- Optimized chat template with tool integration support
-- Comprehensive system prompt with XML structure enforcement
-- Detailed tool documentation and usage examples
-- Model parameters optimized for coding tasks (31000 context, 0.7 temperature)
-- GPU acceleration settings (num_gpu 99)
-- Penalty and prediction parameters for consistent output
-
-The model expects the `ARBITER10.gguf` file (based on Xiaomi's MiMo-VL-7B-RL) to be downloaded separately and placed in the project root before creating the Ollama model.
+**Already updated in the Model Integration section above**
 
 ## Console Interface Implementation
 
-The terminal interface (`shell.rs`) uses Ratatui with:
+The terminal interface (`shell.rs`) uses Ratatui with enhanced multi-agent features:
 - Professional console-based display with native terminal text selection
-- Message history with distinct styling for user/AI/thinking/tool content
+- Message history with distinct styling for user/AI/thinking/tool content and **model identification**
 - Mouse support for text selection and copy/paste operations
 - Proper Ctrl+C handling (copy selected text, interrupt operations, or exit)
 - Smart command detection (shell commands vs AI requests)
+- **Real-time model switching indicators** with visual feedback
+- **Multi-agent conversation flow** with clear model transitions
 - Real-time streaming response display with live tool execution feedback
 - Interactive command guidance and alternatives
-- Professional ANSI colors for optimal readability
+- Professional ANSI colors for optimal readability with **model-specific color coding**
 - Natural command history navigation
+- **Context compression notifications** when Observer model is engaged
+- **Task phase indicators** showing Planning/Execution/Evaluation/Completion phases
 
 ## Error Handling
 
-The codebase uses `anyhow::Result` throughout with context-aware error messages. Critical paths include:
-- Ollama connectivity and streaming response parsing
-- Tool execution and result formatting
-- Configuration loading and validation
-- Terminal state management and cleanup
+The codebase uses `anyhow::Result` throughout with context-aware error messages and multi-agent support. Critical paths include:
+
+**Multi-Agent Error Handling:**
+- Model availability detection and fallback strategies
+- Multi-endpoint connectivity with automatic failover
+- Model switching error recovery and retry logic
+- Context compression failure handling
+
+**Enhanced Error Paths:**
+- Ollama connectivity and streaming response parsing across multiple endpoints
+- Tool execution and result formatting with model-specific error handling
+- Configuration loading and validation for orchestration settings
+- Terminal state management and cleanup with model state preservation
+- LSP context extraction error handling and graceful degradation
+- Repository context analysis error recovery
+
+**Intelligent Fallbacks:**
+- Single-model operation when orchestration fails
+- Local-only operation when remote endpoints are unavailable
+- Basic text parsing when Tree-sitter fails
+- Direct tool execution when context extraction fails
+
+## Multi-Agent Troubleshooting
+
+### Model Availability Issues
+```bash
+# Check which models are available
+ollama list | grep -E "(arbiter|dragoon|observer|templar|immortal)"
+
+# Create missing core models
+ollama create arbiter -f models/Modelfile.arbiter
+ollama create dragoon -f models/Modelfile.dragoon
+ollama create observer -f models/Modelfile.observer
+
+# Create advanced models (if you have >32GB RAM)
+ollama create templar -f models/Modelfile.templar
+ollama create immortal -f models/Modelfile.immortal
+```
+
+### Multi-Endpoint Configuration
+```bash
+# Test endpoint connectivity
+curl http://192.168.1.100:11434/api/tags  # Remote endpoint
+curl http://localhost:11434/api/tags       # Local endpoint
+
+# Verify model availability on each endpoint
+curl -X POST http://192.168.1.100:11434/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"model":"arbiter","prompt":"test","stream":false}'
+```
+
+### Performance Optimization
+```bash
+# Monitor model switching behavior
+TRACING=debug cargo run -- "complex coding task"
+
+# Check RAM usage for advanced models
+htop  # Monitor during model loading
+
+# Verify context compression is working
+arbiter "analyze this large codebase"  # Should trigger Observer model
+```
+
+### Configuration Validation
+```bash
+# Validate orchestration config
+arbiter "show system status"  # Shows active models and endpoints
+
+# Test model switching
+arbiter "plan a complex project"  # Should use reasoning model
+arbiter "implement the above plan"  # Should switch to execution model
+```
