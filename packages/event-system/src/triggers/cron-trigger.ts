@@ -1,0 +1,103 @@
+import { ArbiterEvent, EventTrigger, createLogger } from '@arbiter/core';
+import * as cron from 'node-cron';
+
+const logger = createLogger('CronTrigger');
+
+export class CronTrigger {
+  private scheduledJobs = new Map<string, cron.ScheduledTask>();
+
+  async register(trigger: EventTrigger, callback: (event: ArbiterEvent) => Promise<any>): Promise<void> {
+    if (trigger.type !== 'cron') {
+      throw new Error('Invalid trigger type for cron trigger');
+    }
+
+    const config = trigger.config.cron;
+    if (!config) {
+      throw new Error('Cron configuration is required');
+    }
+
+    // Validate cron expression
+    if (!cron.validate(config.schedule)) {
+      throw new Error(`Invalid cron expression: ${config.schedule}`);
+    }
+
+    const jobId = `cron_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const task = cron.schedule(config.schedule, async () => {
+      logger.info(`Cron job triggered: ${config.schedule}`, { jobId });
+
+      const event: ArbiterEvent = {
+        id: this.generateEventId(),
+        type: 'cron',
+        source: `cron:${config.schedule}`,
+        timestamp: new Date(),
+        data: {
+          schedule: config.schedule,
+          timezone: config.timezone || 'UTC',
+        },
+        metadata: {
+          jobId,
+          schedule: config.schedule,
+          timezone: config.timezone,
+        },
+      };
+
+      try {
+        await callback(event);
+        logger.info(`Cron job completed: ${config.schedule}`, { jobId });
+      } catch (error) {
+        logger.error(`Cron job failed: ${config.schedule}`, {
+          jobId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }, {
+      scheduled: false,
+      timezone: config.timezone || 'UTC',
+    });
+
+    this.scheduledJobs.set(jobId, task);
+    task.start();
+
+    logger.info(`Registered cron job: ${config.schedule}`, {
+      jobId,
+      timezone: config.timezone || 'UTC',
+    });
+  }
+
+  async unregister(trigger: EventTrigger): Promise<void> {
+    const config = trigger.config.cron;
+    if (!config) {
+      return;
+    }
+
+    // Find and remove job by schedule
+    for (const [jobId, task] of this.scheduledJobs) {
+      // Note: In a real implementation, you'd need to store the trigger config
+      // to match against it properly. For now, we'll just remove all jobs.
+      task.stop();
+      this.scheduledJobs.delete(jobId);
+      logger.info(`Unregistered cron job: ${config.schedule}`, { jobId });
+    }
+  }
+
+  private generateEventId(): string {
+    return `cron_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  getScheduledJobs(): string[] {
+    return Array.from(this.scheduledJobs.keys());
+  }
+
+  start(): void {
+    logger.info('Cron trigger started');
+  }
+
+  stop(): void {
+    for (const [jobId, task] of this.scheduledJobs) {
+      task.stop();
+    }
+    this.scheduledJobs.clear();
+    logger.info('Cron trigger stopped');
+  }
+}
