@@ -3,7 +3,6 @@ import {
   EventHandler,
   EventProcessingResult,
   WorkflowConfig,
-  EventTrigger,
   createLogger,
   ArbiterError,
 } from '@arbiter/core';
@@ -271,14 +270,6 @@ export class EventSystem {
     logger.info('Event system stopped successfully');
   }
 
-  async triggerManualEvent(workflowId: string, data: any): Promise<any> {
-    const manualTrigger = this.triggerInstances.get('manual') as ManualTrigger;
-    if (!manualTrigger) {
-      throw new ArbiterError('Manual trigger not available', 'TRIGGER_NOT_FOUND');
-    }
-
-    return await manualTrigger.triggerManual(workflowId, data);
-  }
 
   private generateEventId(): string {
     return `event_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;

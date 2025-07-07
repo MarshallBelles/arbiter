@@ -23,6 +23,7 @@ export interface AgentLevel {
 
 export interface EventTrigger {
   type: 'webhook' | 'cron' | 'manual' | 'file-watch' | 'api';
+  workflowId?: string;
   config: {
     webhook?: {
       endpoint: string;

@@ -10,7 +10,6 @@ import {
   ArbiterEvent,
   createLogger,
   WorkflowError,
-  AgentError,
 } from '@arbiter/core';
 import { AgentRuntime } from '@arbiter/agent-runtime';
 
@@ -144,7 +143,11 @@ export class WorkflowEngine {
             input,
             userPrompt,
             {
+              agentId: agent.id,
               workflowId: context.workflow.id,
+              eventData: context.eventData,
+              tools: availableTools,
+              conversationHistory: [],
               executionId: context.execution.id,
               metadata: context.eventData,
             }
@@ -333,10 +336,10 @@ export class WorkflowEngine {
 
   private async simulateAgentExecution(
     agent: AgentConfig,
-    context: WorkflowExecutionContext,
-    availableTools: Map<string, AgentTool>,
-    input: any,
-    userPrompt?: string
+    _context: WorkflowExecutionContext,
+    _availableTools: Map<string, AgentTool>,
+    _input: any,
+    _userPrompt?: string
   ): Promise<AgentExecutionResult> {
     // This is a simulation - in the real implementation, this would call the agent runtime
     // The agent runtime would handle the actual AI model calls
@@ -365,7 +368,11 @@ export class WorkflowEngine {
                 params,
                 undefined,
                 {
+                  agentId: agent.id,
                   workflowId: workflow.id,
+                  eventData: params,
+                  tools: new Map(),
+                  conversationHistory: [],
                   executionId: 'tool-call',
                   metadata: params,
                 }

@@ -334,7 +334,7 @@ describe('ManualTrigger', () => {
       // Execute manual trigger
       const results = await manualTrigger.triggerManual({ test: 'data' });
       expect(results).toHaveLength(10);
-      expect(results.every(r => r.success === true)).toBe(true);
+      expect(results.every((r: any) => r.success === true)).toBe(true);
 
       // Verify all callbacks were called
       callbacks.forEach(callback => {

@@ -1,5 +1,5 @@
 import { WebhookTrigger } from '../triggers/webhook-trigger';
-import { EventTrigger, ArbiterEvent } from '@arbiter/core';
+import { EventTrigger } from '@arbiter/core';
 
 // Mock logger
 jest.mock('@arbiter/core', () => ({
@@ -187,7 +187,6 @@ describe('WebhookTrigger', () => {
     });
 
     it('should create proper event structure', async () => {
-      const endpoint = '/api/webhook/test';
       const method = 'POST';
       const body = { input: 'test input', timestamp: '2023-01-01T00:00:00Z' };
       const headers = { 'user-agent': 'test-client' };

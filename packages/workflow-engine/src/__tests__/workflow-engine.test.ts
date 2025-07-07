@@ -2,8 +2,6 @@ import { WorkflowEngine } from '../workflow-engine';
 import {
   WorkflowConfig,
   ArbiterEvent,
-  AgentConfig,
-  WorkflowExecution,
 } from '@arbiter/core';
 
 // Mock console to avoid noise in tests
@@ -401,12 +399,12 @@ describe('WorkflowEngine', () => {
 
   describe('workflow validation edge cases', () => {
     it('should reject workflow with null root agent', async () => {
-      const workflow = {
+      const workflow: WorkflowConfig = {
         id: 'invalid-workflow',
         name: 'Invalid Workflow',
         description: 'A workflow with null root agent',
         version: '1.0.0',
-        trigger: { type: 'manual', config: {} },
+        trigger: { type: 'manual' as const, config: {} },
         rootAgent: null as any,
         levels: [],
         createdAt: new Date(),
@@ -549,12 +547,12 @@ describe('WorkflowEngine', () => {
     });
 
     it('should reject workflow with level missing agents array', async () => {
-      const workflow = {
+      const workflow: WorkflowConfig = {
         id: 'no-agents-workflow',
         name: 'No Agents Workflow',
         description: 'A workflow with missing agents array',
         version: '1.0.0',
-        trigger: { type: 'manual', config: {} },
+        trigger: { type: 'manual' as const, config: {} },
         rootAgent: {
           id: 'root-agent',
           name: 'Root Agent',
@@ -774,7 +772,6 @@ describe('WorkflowEngine', () => {
     });
 
     it('should handle tool calls with missing tool names', async () => {
-      const mockExecuteToolCalls = jest.fn();
       const originalMethod = (workflowEngine as any).executeToolCalls;
 
       // Test the actual executeToolCalls method with invalid tool calls
@@ -798,7 +795,7 @@ describe('WorkflowEngine', () => {
       expect(result.length).toBe(4);
       
       // All should fail due to missing/invalid tool names
-      result.forEach(toolResult => {
+      result.forEach((toolResult: any) => {
         expect(toolResult.success).toBe(false);
         expect(toolResult.error).toBeDefined();
       });
@@ -900,7 +897,7 @@ describe('WorkflowEngine', () => {
       expect(result.length).toBe(4);
       
       // Check that tools were executed (all should succeed)
-      expect(result.every(r => r.success)).toBe(true);
+      expect(result.every((r: any) => r.success)).toBe(true);
     });
 
     it('should handle tool calls with undefined sequence orders', async () => {
@@ -926,7 +923,7 @@ describe('WorkflowEngine', () => {
 
       expect(result).toBeDefined();
       expect(result.length).toBe(3);
-      expect(result.every(r => r.success)).toBe(true);
+      expect(result.every((r: any) => r.success)).toBe(true);
     });
   });
 

@@ -114,7 +114,7 @@ export class CronTrigger {
   }
 
   stop(): void {
-    for (const [jobId, task] of this.scheduledJobs) {
+    for (const [_jobId, task] of this.scheduledJobs) {
       task.stop();
     }
     this.scheduledJobs.clear();

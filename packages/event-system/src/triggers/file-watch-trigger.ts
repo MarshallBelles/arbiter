@@ -143,7 +143,7 @@ export class FileWatchTrigger {
   }
 
   async stop(): Promise<void> {
-    for (const [watcherId, watcher] of this.watchers) {
+    for (const [_watcherId, watcher] of this.watchers) {
       await watcher.close();
     }
     this.watchers.clear();

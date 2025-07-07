@@ -45,6 +45,8 @@ export interface AgentExecutionContext {
   previousResponses?: AgentResponse[];
   tools: Map<string, AgentTool>;
   conversationHistory: ConversationMessage[];
+  executionId?: string;
+  metadata?: any;
 }
 
 export interface ConversationMessage {
@@ -59,4 +61,5 @@ export interface AgentExecutionResult {
   next_steps: string;
   status: 'working' | 'completed' | 'need_info' | 'error';
   raw_response?: string;
+  tokensUsed?: number;
 }

@@ -1,7 +1,6 @@
 import {
   AgentConfig,
   AgentTool,
-  AgentResponse,
   AgentExecutionResult,
   AgentExecutionContext,
   ConversationMessage,
@@ -138,7 +137,7 @@ Work autonomously to complete the task. Make decisions about what information to
       // Handle circular references by using a Map to track visited objects
       const seen = new WeakSet();
       
-      const replacer = (key: string, value: any): any => {
+      const replacer = (_key: string, value: any): any => {
         if (typeof value === 'object' && value !== null) {
           if (seen.has(value)) {
             return '[Circular Reference]';
@@ -175,7 +174,7 @@ Work autonomously to complete the task. Make decisions about what information to
 
   private async executeConversationLoop(
     userMessage: string,
-    context?: AgentExecutionContext
+    _context?: AgentExecutionContext
   ): Promise<AgentExecutionResult> {
     
     // Add user message to conversation
@@ -208,7 +207,7 @@ Work autonomously to complete the task. Make decisions about what information to
     }
 
     // Extract token usage from model response
-    const tokensUsed = response.usage?.total_tokens || 0;
+    const tokensUsed = response.usage?.totalTokens || 0;
 
     // Return structured result
     return {

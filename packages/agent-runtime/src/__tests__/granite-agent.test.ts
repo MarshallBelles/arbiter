@@ -3,7 +3,6 @@ import {
   AgentConfig,
   ModelProviderConfig,
   AgentTool,
-  AgentExecutionContext,
 } from '@arbiter/core';
 
 // Mock node-fetch
@@ -344,9 +343,6 @@ describe('GraniteAgent', () => {
     });
 
     it('should clear conversation but keep system prompt', () => {
-      // Add some conversation
-      const input = { task: 'test' };
-      
       // Manually add messages to test clearing
       const agentAny = agent as any;
       agentAny.conversationHistory.push(

@@ -975,7 +975,7 @@ describe('EventSystem', () => {
       const results = await Promise.all(promises);
       
       expect(results).toHaveLength(10);
-      expect(results.every(r => r.success)).toBe(true);
+      expect(results.every((r: any) => r.success)).toBe(true);
       
       // Check trigger count
       const handler = eventSystem.getEventHandlers().find(h => h.workflowId === workflow.id);

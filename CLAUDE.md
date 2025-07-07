@@ -20,9 +20,21 @@ cd apps/web && pnpm dev        # React frontend on port 3000
 pnpm build
 
 # Run tests
-pnpm test                      # All packages
-pnpm --filter @arbiter/api test  # Specific package
+pnpm test                      # All packages (Jest + Vitest + Playwright)
+pnpm test:e2e                  # End-to-end tests only
+pnpm --filter @arbiter/api test  # API tests (Jest)
+pnpm --filter @arbiter/web test  # Frontend tests (Vitest)
+
+# Specific test patterns
 cd apps/api && npm test -- --testPathPattern="run-logger.test.ts"  # Single test file
+cd apps/api && npm test -- --testNamePattern="chaos engineering"   # Test by name
+cd apps/web && npm test -- --testPathPattern="RunViewer.test.tsx"  # React component test
+
+# Test categories
+cd apps/api && npm test -- --testPathPattern="health.test.ts"              # Health endpoint
+cd apps/api && npm test -- --testPathPattern="network-failures.test.ts"   # Network resilience
+cd apps/api && npm test -- --testPathPattern="chaos-engineering.test.ts"  # Chaos tests
+cd apps/e2e && npm test -- --headed                                        # E2E with browser UI
 
 # Linting and formatting
 pnpm lint
@@ -111,10 +123,30 @@ apps/
 ## Development Patterns
 
 ### Test Architecture
-- **Unit Tests**: Jest for all packages and API routes
+Arbiter employs a comprehensive testing strategy designed for **pre-production bug detection** and **system optimization**:
+
+#### **Backend Testing (Jest)**
+- **Unit Tests**: 28+ test files across all packages and API routes
 - **Integration Tests**: Event system → WorkflowEngine → AgentRuntime chains
-- **E2E Tests**: Playwright for complete user workflows
 - **Database Tests**: Temporary SQLite files for isolation
+- **Health Endpoint Tests**: Complete API health monitoring coverage
+- **Edge Case Tests**: 30+ comprehensive scenarios for workflow routes
+- **Network Failure Tests**: External dependency handling and retry mechanisms
+- **Chaos Engineering Tests**: Random failures, resource exhaustion, system recovery
+
+#### **Frontend Testing (Vitest + React Testing Library)**
+- **Component Tests**: RunViewer (25+ tests), RunAnalytics (20+ tests)
+- **User Interaction Tests**: Search, filtering, modal interactions, export functionality
+- **Performance Tests**: Large dataset handling, rendering efficiency
+- **Error Handling Tests**: API failures, loading states, empty states
+- **Data Formatting Tests**: Number formatting, date handling, validation
+
+#### **End-to-End Testing (Playwright)**
+- **User Workflow Tests**: Complete workflows from creation to execution
+- **Cross-Browser Tests**: Chrome, Firefox, Safari, Mobile Chrome/Safari
+- **Error Scenario Tests**: 12 edge cases and failure conditions
+- **Performance Tests**: Concurrent operations, large workflows
+- **UI Navigation Tests**: Responsive design, accessibility
 
 ### Error Handling
 - Custom error classes: `WorkflowError`, `AgentError`, `ArbiterError`
@@ -149,3 +181,58 @@ When creating test data or new records, always ensure:
 - Each test creates unique temporary SQLite databases
 - Use `beforeEach`/`afterEach` for proper cleanup
 - Avoid sharing database instances between test suites
+
+## Testing Strategy for Pre-Production
+
+### Bug Detection Focus
+The testing suite prioritizes **finding bugs and inefficiencies** before production deployment:
+
+#### **Edge Case Discovery**
+- **Large Payload Tests**: 10MB+ workflow configurations, 1000+ agents, 50+ levels deep
+- **Concurrent Operations**: Race conditions, database conflicts, simultaneous updates
+- **Data Validation**: SQL injection prevention, Unicode handling, malformed JSON
+- **Resource Limits**: Memory exhaustion, CPU saturation, file descriptor limits
+
+#### **System Resilience Testing**
+- **Network Failures**: API timeouts, connection drops, SSL certificate errors
+- **External Dependencies**: Retry mechanisms, circuit breakers, graceful degradation
+- **Chaos Engineering**: Random component failures, cascading outages, recovery scenarios
+- **Performance Under Load**: Response times, throughput, memory usage patterns
+
+#### **User Experience Validation**
+- **Frontend Robustness**: Large datasets, search performance, modal interactions
+- **Error Handling**: API failures, loading states, empty data scenarios
+- **Cross-Browser Compatibility**: Desktop and mobile browsers
+- **Accessibility**: Screen readers, keyboard navigation, color contrast
+
+### Test File Organization
+```
+apps/api/src/__tests__/
+├── routes/
+│   ├── health.test.ts           # API health monitoring (19 tests)
+│   └── workflows.test.ts        # Enhanced workflow routes (70+ tests)
+├── network/
+│   └── network-failures.test.ts # External dependency failures (21 tests)
+├── chaos/
+│   └── chaos-engineering.test.ts # System resilience (17 tests)
+├── integration/                 # Service integration tests
+├── security/                    # Security validation tests
+└── stress/                      # Performance and load tests
+
+apps/web/src/components/__tests__/
+├── RunViewer.test.tsx           # Data table component (25+ tests)
+└── RunAnalytics.test.tsx        # Analytics dashboard (20+ tests)
+
+apps/e2e/tests/
+├── workflow-lifecycle.spec.ts   # Complete workflow management
+├── agent-management.spec.ts     # Agent CRUD operations
+├── run-analytics.spec.ts        # Execution monitoring
+└── error-scenarios.spec.ts      # Error handling and edge cases
+```
+
+### Quality Assurance Principles
+1. **Fail Fast**: Tests detect issues early in development cycle
+2. **Realistic Scenarios**: Tests mirror actual production conditions
+3. **Comprehensive Coverage**: Unit → Integration → E2E → Chaos testing
+4. **Performance Aware**: Tests identify bottlenecks and optimization opportunities
+5. **Security First**: Input validation, injection prevention, data integrity checks

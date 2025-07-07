@@ -30,8 +30,20 @@
       "Bash(rm:*)",
       "Bash(pnpm --filter @arbiter/api test)",
       "Bash(pnpm add:*)",
-      "Bash(npx vitest run:*)"
+      "Bash(npx vitest run:*)",
+      "Bash(pnpm dev:*)",
+      "Bash(curl:*)",
+      "Bash(sed:*)",
+      "Bash(npx tsc:*)",
+      "mcp__playwright__browser_navigate",
+      "Bash(cat:*)",
+      "Bash(pkill:*)",
+      "Bash(true)"
     ],
     "deny": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "playwright"
+  ]
 }
