@@ -5,6 +5,7 @@ const logger = createLogger('CronTrigger');
 
 export class CronTrigger {
   private scheduledJobs = new Map<string, cron.ScheduledTask>();
+  private triggerConfigs = new Map<string, EventTrigger>();
 
   async register(trigger: EventTrigger, callback: (event: ArbiterEvent) => Promise<any>): Promise<void> {
     if (trigger.type !== 'cron') {
@@ -39,6 +40,7 @@ export class CronTrigger {
           jobId,
           schedule: config.schedule,
           timezone: config.timezone,
+          workflowId: trigger.workflowId,
         },
       };
 
@@ -57,6 +59,7 @@ export class CronTrigger {
     });
 
     this.scheduledJobs.set(jobId, task);
+    this.triggerConfigs.set(jobId, trigger);
     task.start();
 
     logger.info(`Registered cron job: ${config.schedule}`, {
@@ -71,14 +74,31 @@ export class CronTrigger {
       return;
     }
 
-    // Find and remove job by schedule
-    for (const [jobId, task] of this.scheduledJobs) {
-      // Note: In a real implementation, you'd need to store the trigger config
-      // to match against it properly. For now, we'll just remove all jobs.
-      task.stop();
-      this.scheduledJobs.delete(jobId);
-      logger.info(`Unregistered cron job: ${config.schedule}`, { jobId });
+    // Find and remove job by matching trigger configuration
+    for (const [jobId, storedTrigger] of this.triggerConfigs) {
+      const storedConfig = storedTrigger.config.cron;
+      if (storedConfig && 
+          storedConfig.schedule === config.schedule &&
+          storedTrigger.workflowId === trigger.workflowId) {
+        
+        const task = this.scheduledJobs.get(jobId);
+        if (task) {
+          task.stop();
+          this.scheduledJobs.delete(jobId);
+        }
+        this.triggerConfigs.delete(jobId);
+        
+        logger.info(`Unregistered cron job: ${config.schedule}`, { 
+          jobId,
+          workflowId: trigger.workflowId 
+        });
+        return;
+      }
     }
+    
+    logger.warn(`Cron job not found for unregistration: ${config.schedule}`, {
+      workflowId: trigger.workflowId
+    });
   }
 
   private generateEventId(): string {

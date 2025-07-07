@@ -60,3 +60,4 @@ temp/
 
 # Model files
 *.gguf
+dist/

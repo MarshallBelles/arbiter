@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import { ArbiterService } from '../services/arbiter-service.js';
+import { sanitizeExecutionInput } from '../utils/sanitization';
 
 const router = Router();
 
@@ -61,7 +62,7 @@ router.post('/trigger/:workflowId', async (req, res, next) => {
     }
 
     const arbiterService = (req as any).arbiterService as ArbiterService;
-    const result = await arbiterService.triggerManualEvent(req.params.workflowId, value.data);
+    const result = await arbiterService.triggerManualEvent(req.params.workflowId, sanitizeExecutionInput(value.data));
     
     res.json({
       result,
@@ -78,7 +79,13 @@ router.get('/executions', async (req, res, next) => {
     const arbiterService = (req as any).arbiterService as ArbiterService;
     const activeExecutions = arbiterService.getActiveExecutions();
     
-    const executions = activeExecutions.map(exec => exec.execution);
+    if (!activeExecutions) {
+      return res.json([]);
+    }
+    
+    const executions = activeExecutions
+      .filter(exec => exec && exec.execution) // Filter out invalid entries
+      .map(exec => exec.execution);
     res.json(executions);
   } catch (error) {
     next(error);
@@ -91,7 +98,7 @@ router.get('/executions/:id', async (req, res, next) => {
     const arbiterService = (req as any).arbiterService as ArbiterService;
     const execution = arbiterService.getExecution(req.params.id);
     
-    if (!execution) {
+    if (!execution || !execution.execution) {
       return res.status(404).json({
         error: 'Not Found',
         message: 'Execution not found',

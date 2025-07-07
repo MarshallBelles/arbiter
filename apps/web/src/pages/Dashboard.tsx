@@ -11,6 +11,9 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { createLogger } from '@arbiter/core';
+
+const logger = createLogger('DashboardPage');
 
 interface SystemStatus {
   workflows: { total: number; enabled: number };
@@ -31,7 +34,7 @@ export function Dashboard() {
         const response = await api.get('/health');
         setStatus(response.data);
       } catch (error) {
-        console.error('Failed to fetch system status:', error);
+        logger.error('Failed to fetch system status', { error: error instanceof Error ? error.message : 'Unknown error' });
       } finally {
         setLoading(false);
       }

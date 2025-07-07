@@ -16,8 +16,10 @@ const logger = createLogger('AgentRuntime');
 
 export class AgentRuntime {
   private agents = new Map<string, GraniteAgent>();
+  private agentConfigs = new Map<string, AgentConfig>(); // Store original configs
   private modelConfigs = new Map<string, ModelProviderConfig>();
   private globalTools = new Map<string, AgentTool>();
+  private tokenUsage = new Map<string, number>();
 
   constructor() {
     this.initializeDefaultModelConfigs();
@@ -67,8 +69,9 @@ export class AgentRuntime {
       }
     }
 
-    // Store agent
+    // Store agent and config
     this.agents.set(config.id, agent);
+    this.agentConfigs.set(config.id, config);
 
     logger.info(`Created agent: ${config.name}`, {
       agentId: config.id,
@@ -98,9 +101,15 @@ export class AgentRuntime {
     try {
       const result = await agent.execute(input, userPrompt, context);
       
+      // Track token usage if available
+      if (result.tokensUsed && result.tokensUsed > 0) {
+        this.addTokenUsage(agentId, result.tokensUsed);
+      }
+      
       logger.info(`Agent execution completed: ${agentId}`, {
         status: result.status,
         toolCallCount: result.tool_calls.length,
+        tokensUsed: result.tokensUsed || 0,
       });
 
       return result;
@@ -142,22 +151,7 @@ export class AgentRuntime {
   }
 
   getAgentConfig(agentId: string): AgentConfig | undefined {
-    // In a real implementation, you'd store the config separately
-    // For now, we'll return a basic config
-    const agent = this.agents.get(agentId);
-    if (!agent) {
-      return undefined;
-    }
-
-    return {
-      id: agentId,
-      name: agentId,
-      description: 'Agent configuration',
-      model: 'granite',
-      systemPrompt: 'System prompt',
-      availableTools: agent.getAvailableTools(),
-      level: 0,
-    };
+    return this.agentConfigs.get(agentId);
   }
 
   listAgents(): string[] {
@@ -167,9 +161,24 @@ export class AgentRuntime {
   removeAgent(agentId: string): boolean {
     const removed = this.agents.delete(agentId);
     if (removed) {
+      this.agentConfigs.delete(agentId); // Also remove stored config
+      this.tokenUsage.delete(agentId); // Also remove token usage
       logger.info(`Removed agent: ${agentId}`);
     }
     return removed;
+  }
+
+  getTokenUsage(agentId: string): number {
+    return this.tokenUsage.get(agentId) || 0;
+  }
+
+  private addTokenUsage(agentId: string, tokens: number): void {
+    const currentUsage = this.tokenUsage.get(agentId) || 0;
+    this.tokenUsage.set(agentId, currentUsage + tokens);
+  }
+
+  resetTokenUsage(agentId: string): void {
+    this.tokenUsage.set(agentId, 0);
   }
 
   getGlobalTools(): string[] {
@@ -199,7 +208,7 @@ export class AgentRuntime {
               agentId: targetAgent.id,
               executionTime: Date.now() - startTime,
               model: targetAgent.model,
-              tokensUsed: 0, // Would be tracked in real implementation
+              tokensUsed: result.tokensUsed || 0
             },
           };
 

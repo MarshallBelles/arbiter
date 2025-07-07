@@ -21,16 +21,40 @@ export class ManualTrigger {
   }
 
   async unregister(trigger: EventTrigger): Promise<void> {
-    // Find and remove trigger
-    for (const [triggerId, registeredTrigger] of this.registeredTriggers) {
-      // Note: In a real implementation, you'd need to store the trigger config
-      // to match against it properly. For now, we'll just remove all triggers.
-      this.registeredTriggers.delete(triggerId);
-      logger.info(`Unregistered manual trigger`, { triggerId });
+    // Find and remove trigger by matching workflow ID
+    for (const [triggerId, registeredData] of this.registeredTriggers) {
+      if (registeredData.trigger.workflowId === trigger.workflowId) {
+        this.registeredTriggers.delete(triggerId);
+        logger.info(`Unregistered manual trigger`, { 
+          triggerId,
+          workflowId: trigger.workflowId 
+        });
+        return;
+      }
     }
+    
+    logger.warn(`Manual trigger not found for unregistration`, {
+      workflowId: trigger.workflowId
+    });
   }
 
-  async triggerManual(data: any): Promise<any> {
+  async triggerManual(workflowId: string, data: any): Promise<any> {
+    // Find the trigger for this workflow
+    let targetTrigger = null;
+    let targetTriggerId = null;
+    
+    for (const [triggerId, registeredData] of this.registeredTriggers) {
+      if (registeredData.trigger.workflowId === workflowId) {
+        targetTrigger = registeredData;
+        targetTriggerId = triggerId;
+        break;
+      }
+    }
+    
+    if (!targetTrigger) {
+      throw new Error(`No manual trigger found for workflow: ${workflowId}`);
+    }
+
     const event: ArbiterEvent = {
       id: this.generateEventId(),
       type: 'manual',
@@ -39,26 +63,25 @@ export class ManualTrigger {
       data: data,
       metadata: {
         triggeredBy: 'manual',
+        workflowId: workflowId,
       },
     };
 
-    // Execute all registered manual triggers
-    const results = [];
-    for (const [triggerId, registeredTrigger] of this.registeredTriggers) {
-      try {
-        logger.info(`Executing manual trigger`, { triggerId });
-        const result = await registeredTrigger.callback(event);
-        results.push(result);
-      } catch (error) {
-        logger.error(`Manual trigger failed`, {
-          triggerId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-        results.push({ error: error instanceof Error ? error.message : 'Unknown error' });
-      }
+    try {
+      logger.info(`Executing manual trigger for workflow`, { 
+        triggerId: targetTriggerId,
+        workflowId 
+      });
+      const result = await targetTrigger.callback(event);
+      return result;
+    } catch (error) {
+      logger.error(`Manual trigger failed`, {
+        triggerId: targetTriggerId,
+        workflowId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
     }
-
-    return results;
   }
 
   private generateEventId(): string {

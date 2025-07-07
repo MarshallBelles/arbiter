@@ -12,6 +12,10 @@ import {
   Activity
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { createLogger } from '@arbiter/core';
+import { useToast } from '../hooks/useToast';
+
+const logger = createLogger('WorkflowsPage');
 
 interface Workflow {
   id: string;
@@ -39,6 +43,7 @@ export function Workflows() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
+  const { showSuccess, showError } = useToast();
 
   useEffect(() => {
     const fetchWorkflows = async () => {
@@ -46,7 +51,7 @@ export function Workflows() {
         const response = await api.get('/workflows');
         setWorkflows(response.data);
       } catch (error) {
-        console.error('Failed to fetch workflows:', error);
+        logger.error('Failed to fetch workflows', { error: error instanceof Error ? error.message : 'Unknown error' });
       } finally {
         setLoading(false);
       }
@@ -68,10 +73,14 @@ export function Workflows() {
       await api.post(`/workflows/${workflowId}/execute`, {
         data: { source: 'manual', timestamp: new Date() }
       });
-      // TODO: Add toast notification
-      console.log('Workflow executed successfully');
+      showSuccess('Workflow Executed', 'The workflow has been started successfully');
+      logger.info('Workflow executed successfully', { workflowId });
     } catch (error) {
-      console.error('Failed to execute workflow:', error);
+      showError('Execution Failed', 'Failed to execute the workflow. Please try again.');
+      logger.error('Failed to execute workflow', { 
+        workflowId, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      });
     }
   };
 

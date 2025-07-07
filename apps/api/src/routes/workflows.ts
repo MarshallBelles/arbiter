@@ -2,6 +2,7 @@ import { Router } from 'express';
 import Joi from 'joi';
 import { ArbiterService } from '../services/arbiter-service';
 import { WorkflowConfig } from '@arbiter/core';
+import { sanitizeWorkflowConfig, sanitizeExecutionInput } from '../utils/sanitization';
 
 const router = Router();
 
@@ -69,7 +70,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const workflowConfig: WorkflowConfig = {
-      ...value,
+      ...sanitizeWorkflowConfig(value),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -118,7 +119,7 @@ router.put('/:id', async (req, res, next) => {
     }
 
     const workflowConfig: WorkflowConfig = {
-      ...value,
+      ...sanitizeWorkflowConfig(value),
       id: req.params.id,
       updatedAt: new Date(),
     };
@@ -161,7 +162,7 @@ router.post('/:id/execute', async (req, res, next) => {
     }
 
     const arbiterService = (req as any).arbiterService as ArbiterService;
-    const execution = await arbiterService.executeWorkflow(req.params.id, value.data);
+    const execution = await arbiterService.executeWorkflow(req.params.id, sanitizeExecutionInput(value.data));
     
     res.json({
       executionId: execution.id,

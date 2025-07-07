@@ -1,4 +1,7 @@
 import axios from 'axios';
+import { createLogger } from '@arbiter/core';
+
+const logger = createLogger('WebAPI');
 
 export const api = axios.create({
   baseURL: '/api',
@@ -28,10 +31,13 @@ api.interceptors.response.use(
     // Handle common errors here
     if (error.response?.status === 401) {
       // Handle unauthorized
-      console.error('Unauthorized access');
+      logger.error('Unauthorized access', { status: 401 });
     } else if (error.response?.status === 500) {
       // Handle server errors
-      console.error('Server error:', error.response.data);
+      logger.error('Server error', { 
+        status: 500, 
+        data: error.response.data 
+      });
     }
     return Promise.reject(error);
   }

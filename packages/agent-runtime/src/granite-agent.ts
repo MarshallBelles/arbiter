@@ -207,6 +207,9 @@ Work autonomously to complete the task. Make decisions about what information to
       throw new AgentError('Missing required fields in agent response', this.config.id);
     }
 
+    // Extract token usage from model response
+    const tokensUsed = response.usage?.total_tokens || 0;
+
     // Return structured result
     return {
       reasoning: parsed.reasoning,
@@ -214,6 +217,7 @@ Work autonomously to complete the task. Make decisions about what information to
       next_steps: parsed.next_steps || 'No next steps specified',
       status: parsed.status,
       raw_response: response.content,
+      tokensUsed,
     };
   }
 

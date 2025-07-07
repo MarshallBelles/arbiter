@@ -23,7 +23,8 @@
       "Bash(npx jest:*)",
       "Bash(git rm:*)",
       "Bash(git add:*)",
-      "Bash(git rebase:*)"
+      "Bash(git rebase:*)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }

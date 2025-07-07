@@ -2,6 +2,7 @@ import { Router } from 'express';
 import Joi from 'joi';
 import { ArbiterService } from '../services/arbiter-service.js';
 import { AgentConfig } from '@arbiter/core';
+import { sanitizeAgentConfig, sanitizeExecutionInput } from '../utils/sanitization';
 
 const router = Router();
 
@@ -47,7 +48,7 @@ router.post('/', async (req, res, next) => {
       });
     }
 
-    const agentConfig: AgentConfig = value;
+    const agentConfig: AgentConfig = sanitizeAgentConfig(value);
 
     const arbiterService = (req as any).arbiterService as ArbiterService;
     const agentId = await arbiterService.createAgent(agentConfig);
@@ -93,7 +94,7 @@ router.put('/:id', async (req, res, next) => {
     }
 
     const agentConfig: AgentConfig = {
-      ...value,
+      ...sanitizeAgentConfig(value),
       id: req.params.id,
     };
 
@@ -137,8 +138,8 @@ router.post('/:id/execute', async (req, res, next) => {
     const arbiterService = (req as any).arbiterService as ArbiterService;
     const result = await arbiterService.executeAgent(
       req.params.id,
-      value.input,
-      value.userPrompt
+      sanitizeExecutionInput(value.input),
+      value.userPrompt ? sanitizeExecutionInput(value.userPrompt) : undefined
     );
     
     res.json({

@@ -129,8 +129,8 @@ impl LspContextExtractor {
         Ok(LspContextInfo {
             workspace_diagnostics,
             current_file_info: Some(file_analysis),
-            symbol_information: Vec::new(), // TODO: implement symbol extraction
-            completion_context: None,       // TODO: implement completion context
+            symbol_information: self.extract_workspace_symbols().await.unwrap_or_default(),
+            completion_context: self.extract_completion_context(&file_path, &position).await.ok(),
             error_count,
             warning_count,
             hint_count,
@@ -269,7 +269,7 @@ impl LspContextExtractor {
             language,
             diagnostics: diagnostics.to_vec(),
             hover_info,
-            symbols_at_cursor: Vec::new(), // TODO: extract symbols at specific positions
+            symbols_at_cursor: self.extract_symbols_at_cursor(&file_path, &position).await.unwrap_or_default(),
             available_completions: completions,
         })
     }
@@ -470,6 +470,147 @@ impl LspContextExtractor {
     fn estimate_tokens(&self, text: &str) -> usize {
         // Rough estimation: ~4 characters per token
         (text.len() + 3) / 4
+    }
+    
+    async fn extract_workspace_symbols(&self) -> Result<Vec<SymbolInfo>> {
+        let mut symbols = Vec::new();
+        
+        // Get document symbols from current workspace
+        for file_path in self.diagnostic_cache.keys() {
+            if let Ok(file_symbols) = self.lsp_manager.get_document_symbols(file_path).await {
+                for symbol in file_symbols {
+                    let symbol_info = SymbolInfo {
+                        name: symbol.name.clone(),
+                        kind: self.symbol_kind_to_string(&symbol.kind),
+                        location: format!("{}:{}:{}", 
+                            file_path.display(), 
+                            symbol.range.start.line + 1, 
+                            symbol.range.start.character + 1),
+                        hover_text: None, // Could be populated with hover info if needed
+                        signature: None,  // Could be populated with signature info if needed
+                    };
+                    symbols.push(symbol_info);
+                }
+            }
+        }
+        
+        // Limit the number of symbols to avoid excessive context
+        if symbols.len() > 100 {
+            symbols.truncate(100);
+        }
+        
+        Ok(symbols)
+    }
+    
+    fn symbol_kind_to_string(&self, kind: &lsp_types::SymbolKind) -> String {
+        match kind {
+            lsp_types::SymbolKind::FILE => "file".to_string(),
+            lsp_types::SymbolKind::MODULE => "module".to_string(),
+            lsp_types::SymbolKind::NAMESPACE => "namespace".to_string(),
+            lsp_types::SymbolKind::PACKAGE => "package".to_string(),
+            lsp_types::SymbolKind::CLASS => "class".to_string(),
+            lsp_types::SymbolKind::METHOD => "method".to_string(),
+            lsp_types::SymbolKind::PROPERTY => "property".to_string(),
+            lsp_types::SymbolKind::FIELD => "field".to_string(),
+            lsp_types::SymbolKind::CONSTRUCTOR => "constructor".to_string(),
+            lsp_types::SymbolKind::ENUM => "enum".to_string(),
+            lsp_types::SymbolKind::INTERFACE => "interface".to_string(),
+            lsp_types::SymbolKind::FUNCTION => "function".to_string(),
+            lsp_types::SymbolKind::VARIABLE => "variable".to_string(),
+            lsp_types::SymbolKind::CONSTANT => "constant".to_string(),
+            lsp_types::SymbolKind::STRING => "string".to_string(),
+            lsp_types::SymbolKind::NUMBER => "number".to_string(),
+            lsp_types::SymbolKind::BOOLEAN => "boolean".to_string(),
+            lsp_types::SymbolKind::ARRAY => "array".to_string(),
+            lsp_types::SymbolKind::OBJECT => "object".to_string(),
+            lsp_types::SymbolKind::KEY => "key".to_string(),
+            lsp_types::SymbolKind::NULL => "null".to_string(),
+            lsp_types::SymbolKind::ENUM_MEMBER => "enum_member".to_string(),
+            lsp_types::SymbolKind::STRUCT => "struct".to_string(),
+            lsp_types::SymbolKind::EVENT => "event".to_string(),
+            lsp_types::SymbolKind::OPERATOR => "operator".to_string(),
+            lsp_types::SymbolKind::TYPE_PARAMETER => "type_parameter".to_string(),
+        }
+    }
+    
+    async fn extract_completion_context(&self, file_path: &Path, position: &lsp_types::Position) -> Result<CompletionContext> {
+        // Get completion items at the specified position
+        let completion_items = self.lsp_manager.get_completions(file_path, position).await
+            .unwrap_or_default();
+        
+        let available_items: Vec<String> = completion_items
+            .into_iter()
+            .map(|item| {
+                match &item.detail {
+                    Some(detail) => format!("{}: {}", item.label, detail),
+                    None => item.label,
+                }
+            })
+            .take(50) // Limit to avoid excessive context
+            .collect();
+        
+        let context_type = if file_path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            "rust".to_string()
+        } else if file_path.extension().and_then(|s| s.to_str()) == Some("ts") 
+               || file_path.extension().and_then(|s| s.to_str()) == Some("js") {
+            "typescript".to_string()
+        } else {
+            "generic".to_string()
+        };
+        
+        Ok(CompletionContext {
+            available_items,
+            context_type,
+            trigger_character: None, // Could be determined from the context
+        })
+    }
+    
+    async fn extract_symbols_at_cursor(&self, file_path: &Path, position: &lsp_types::Position) -> Result<Vec<String>> {
+        let mut symbols = Vec::new();
+        
+        // Try to get symbol information at the cursor position
+        if let Ok(hover_response) = self.lsp_manager.get_hover_info(file_path, position).await {
+            if let Some(hover_info) = hover_response {
+                // Extract symbol name from hover info
+                let lines: Vec<&str> = hover_info.lines().collect();
+                for line in lines {
+                    // Look for symbol definitions, function signatures, etc.
+                    if line.contains("fn ") || line.contains("function ") || line.contains("def ") {
+                        symbols.push(line.trim().to_string());
+                    } else if line.contains("struct ") || line.contains("class ") || line.contains("interface ") {
+                        symbols.push(line.trim().to_string());
+                    } else if line.contains("let ") || line.contains("const ") || line.contains("var ") {
+                        symbols.push(line.trim().to_string());
+                    }
+                }
+            }
+        }
+        
+        // Try to get definition at cursor
+        if let Ok(definitions) = self.lsp_manager.get_definition(file_path, position).await {
+            for definition in definitions {
+                let location = format!("{}:{}:{}", 
+                    definition.uri.path(), 
+                    definition.range.start.line + 1, 
+                    definition.range.start.character + 1);
+                symbols.push(format!("definition -> {}", location));
+            }
+        }
+        
+        // Try to get references at cursor
+        if let Ok(references) = self.lsp_manager.get_references(file_path, position).await {
+            let reference_count = references.len();
+            if reference_count > 0 {
+                symbols.push(format!("{} reference(s)", reference_count));
+            }
+        }
+        
+        // Limit the number of symbols to avoid excessive context
+        if symbols.len() > 10 {
+            symbols.truncate(10);
+        }
+        
+        Ok(symbols)
     }
     
     pub async fn shutdown(&mut self) -> Result<()> {

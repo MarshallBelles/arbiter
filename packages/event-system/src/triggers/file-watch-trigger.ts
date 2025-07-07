@@ -5,6 +5,7 @@ const logger = createLogger('FileWatchTrigger');
 
 export class FileWatchTrigger {
   private watchers = new Map<string, FSWatcher>();
+  private triggerConfigs = new Map<string, EventTrigger>();
 
   async register(trigger: EventTrigger, callback: (event: ArbiterEvent) => Promise<any>): Promise<void> {
     if (trigger.type !== 'file-watch') {
@@ -48,6 +49,7 @@ export class FileWatchTrigger {
     });
 
     this.watchers.set(watcherId, watcher);
+    this.triggerConfigs.set(watcherId, trigger);
 
     logger.info(`Registered file watcher: ${config.path}`, {
       watcherId,
@@ -62,14 +64,31 @@ export class FileWatchTrigger {
       return;
     }
 
-    // Find and remove watcher by path
-    for (const [watcherId, watcher] of this.watchers) {
-      // Note: In a real implementation, you'd need to store the trigger config
-      // to match against it properly. For now, we'll just close all watchers.
-      await watcher.close();
-      this.watchers.delete(watcherId);
-      logger.info(`Unregistered file watcher: ${config.path}`, { watcherId });
+    // Find and remove watcher by matching trigger configuration
+    for (const [watcherId, storedTrigger] of this.triggerConfigs) {
+      const storedConfig = storedTrigger.config.fileWatch;
+      if (storedConfig && 
+          storedConfig.path === config.path &&
+          storedTrigger.workflowId === trigger.workflowId) {
+        
+        const watcher = this.watchers.get(watcherId);
+        if (watcher) {
+          await watcher.close();
+          this.watchers.delete(watcherId);
+        }
+        this.triggerConfigs.delete(watcherId);
+        
+        logger.info(`Unregistered file watcher: ${config.path}`, { 
+          watcherId,
+          workflowId: trigger.workflowId 
+        });
+        return;
+      }
     }
+    
+    logger.warn(`File watcher not found for unregistration: ${config.path}`, {
+      workflowId: trigger.workflowId
+    });
   }
 
   private async handleFileEvent(
@@ -80,6 +99,7 @@ export class FileWatchTrigger {
   ): Promise<void> {
     logger.info(`File event: ${eventType} ${filePath}`, { watcherId });
 
+    const trigger = this.triggerConfigs.get(watcherId);
     const event: ArbiterEvent = {
       id: this.generateEventId(),
       type: 'file-watch',
@@ -95,6 +115,7 @@ export class FileWatchTrigger {
         watcherId,
         eventType,
         filePath,
+        workflowId: trigger?.workflowId,
       },
     };
 

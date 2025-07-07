@@ -20,8 +20,8 @@ export class ArbiterService {
   private agents = new Map<string, AgentConfig>();
 
   constructor() {
-    this.workflowEngine = new WorkflowEngine();
     this.agentRuntime = new AgentRuntime();
+    this.workflowEngine = new WorkflowEngine(this.agentRuntime);
     this.eventSystem = new EventSystem();
   }
 

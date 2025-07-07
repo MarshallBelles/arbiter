@@ -483,7 +483,7 @@ describe('AgentRuntime', () => {
       
       expect(retrievedConfig).toBeDefined();
       expect(retrievedConfig?.id).toBe('config-test-agent');
-      expect(retrievedConfig?.name).toBe('config-test-agent');
+      expect(retrievedConfig?.name).toBe('Config Test Agent');
       expect(retrievedConfig?.model).toBe('granite');
     });
 

@@ -12,12 +12,22 @@ import {
   WorkflowError,
   AgentError,
 } from '@arbiter/core';
+import { AgentRuntime } from '@arbiter/agent-runtime';
 
 const logger = createLogger('WorkflowEngine');
 
 export class WorkflowEngine {
   private activeExecutions = new Map<string, WorkflowExecutionContext>();
   private agentTools = new Map<string, AgentTool>();
+  private agentRuntime: AgentRuntime | null = null;
+
+  constructor(agentRuntime?: AgentRuntime) {
+    this.agentRuntime = agentRuntime || null;
+  }
+
+  setAgentRuntime(agentRuntime: AgentRuntime): void {
+    this.agentRuntime = agentRuntime;
+  }
 
   async executeWorkflow(
     workflow: WorkflowConfig,
@@ -127,15 +137,27 @@ export class WorkflowEngine {
       this.log(context, 'debug', `Agent iteration ${iterations}`, { agentId: agent.id });
 
       try {
-        // This would be implemented by the agent runtime
-        // For now, we'll simulate the agent execution
-        currentResult = await this.simulateAgentExecution(
-          agent,
-          context,
-          availableTools,
-          input,
-          userPrompt
-        );
+        // Use real agent runtime if available, otherwise simulate
+        if (this.agentRuntime) {
+          currentResult = await this.agentRuntime.executeAgent(
+            agent.id,
+            input,
+            userPrompt,
+            {
+              workflowId: context.workflow.id,
+              executionId: context.execution.id,
+              metadata: context.eventData,
+            }
+          );
+        } else {
+          currentResult = await this.simulateAgentExecution(
+            agent,
+            context,
+            availableTools,
+            input,
+            userPrompt
+          );
+        }
 
         if (currentResult.status === 'completed' || currentResult.status === 'error') {
           break;
@@ -337,16 +359,39 @@ export class WorkflowEngine {
           description: agent.description,
           parameters: agent.inputSchema || {},
           execute: async (params: any) => {
-            // This would be implemented by the agent runtime
-            return {
-              success: true,
-              data: params,
-              metadata: {
-                agentId: agent.id,
-                executionTime: 100,
-                model: agent.model,
-              },
-            };
+            if (this.agentRuntime) {
+              const result = await this.agentRuntime.executeAgent(
+                agent.id,
+                params,
+                undefined,
+                {
+                  workflowId: workflow.id,
+                  executionId: 'tool-call',
+                  metadata: params,
+                }
+              );
+              return {
+                success: result.status === 'completed',
+                data: result.reasoning,
+                metadata: {
+                  agentId: agent.id,
+                  executionTime: Date.now(),
+                  model: agent.model,
+                  tokensUsed: result.tokensUsed || 0,
+                },
+              };
+            } else {
+              // Fallback to simulation
+              return {
+                success: true,
+                data: params,
+                metadata: {
+                  agentId: agent.id,
+                  executionTime: 100,
+                  model: agent.model,
+                },
+              };
+            }
           },
         };
         
