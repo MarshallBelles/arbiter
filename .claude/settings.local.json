@@ -28,7 +28,9 @@
       "Bash(pnpm build:*)",
       "Bash(pnpm exec:*)",
       "Bash(rm:*)",
-      "Bash(pnpm --filter @arbiter/api test)"
+      "Bash(pnpm --filter @arbiter/api test)",
+      "Bash(pnpm add:*)",
+      "Bash(npx vitest run:*)"
     ],
     "deny": []
   }

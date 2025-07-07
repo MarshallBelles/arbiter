@@ -77,10 +77,6 @@ temp/
 models/*.gguf
 models/*.bin
 
-# Rust specific
-Cargo.lock
-**/*.rs.bk
-*.pdb
 
 # TypeScript
 *.tsbuildinfo

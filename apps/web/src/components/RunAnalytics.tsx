@@ -92,7 +92,7 @@ const RunAnalytics: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="bg-white rounded-lg shadow p-6" role="status" aria-label="Loading...">
         <div className="animate-pulse">
           <div className="h-4 bg-gray-200 rounded w-1/4 mb-4"></div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -101,6 +101,7 @@ const RunAnalytics: React.FC = () => {
             ))}
           </div>
         </div>
+        <span className="sr-only">Loading...</span>
       </div>
     );
   }
@@ -216,7 +217,7 @@ const RunAnalytics: React.FC = () => {
             <h3 className="text-lg font-semibold text-gray-900">Recent Errors</h3>
           </div>
           
-          {recentErrors.length > 0 ? (
+          {recentErrors && recentErrors.length > 0 ? (
             <div className="space-y-3">
               {recentErrors.map((error) => (
                 <div key={error.id} className="border-l-4 border-red-500 pl-3 py-2">
