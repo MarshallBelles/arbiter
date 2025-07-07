@@ -417,7 +417,7 @@ export class WorkflowEngine {
     
     // Log to console as well
     const logFn = logger[level] || logger.info;
-    logFn(message, { 
+    logFn.call(logger, message, { 
       executionId: context.execution.id,
       workflowId: context.workflow.id,
       ...data 

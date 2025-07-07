@@ -133,15 +133,8 @@ export class ArbiterServiceDB {
 
   // Workflow management with persistence and logging
   async createWorkflow(config: WorkflowConfig): Promise<string> {
-    const runId = await this.runLogger.logApiRequest({
-      workflowId: config.id,
-      status: 'running',
-      requestData: { action: 'createWorkflow', config },
-      metadata: { operation: 'createWorkflow' },
-    });
-
     try {
-      // Store workflow in database
+      // Store workflow in database first
       await this.workflowRepo.create(config);
 
       // Create and register agents
@@ -156,11 +149,19 @@ export class ArbiterServiceDB {
       // Register workflow with event system
       await this.eventSystem.registerWorkflow(config);
 
-      await this.runLogger.updateRunStatus(runId, 'completed', { workflowId: config.id });
+      // Now log the successful API request (after workflow exists)
+      await this.runLogger.logApiRequest({
+        workflowId: config.id,
+        status: 'completed',
+        requestData: { action: 'createWorkflow', config },
+        metadata: { operation: 'createWorkflow' },
+      });
+
       logger.info(`Created workflow: ${config.name}`, { workflowId: config.id });
       return config.id;
     } catch (error) {
-      await this.runLogger.updateRunError(runId, error instanceof Error ? error : new Error(String(error)));
+      // If workflow creation failed, we can't log to a non-existent workflow
+      logger.error(`Failed to create workflow: ${config.name}`, { error: error instanceof Error ? error.message : 'Unknown error' });
       throw error;
     }
   }
@@ -174,13 +175,6 @@ export class ArbiterServiceDB {
   }
 
   async updateWorkflow(workflowId: string, config: WorkflowConfig): Promise<void> {
-    const runId = await this.runLogger.logApiRequest({
-      workflowId,
-      status: 'running',
-      requestData: { action: 'updateWorkflow', workflowId, config },
-      metadata: { operation: 'updateWorkflow' },
-    });
-
     try {
       const existingWorkflow = await this.workflowRepo.findById(workflowId);
       if (!existingWorkflow) {
@@ -196,27 +190,35 @@ export class ArbiterServiceDB {
       // Re-register with event system
       await this.eventSystem.registerWorkflow(config);
 
-      await this.runLogger.updateRunStatus(runId, 'completed');
+      // Log the successful update
+      await this.runLogger.logApiRequest({
+        workflowId,
+        status: 'completed',
+        requestData: { action: 'updateWorkflow', workflowId, config },
+        metadata: { operation: 'updateWorkflow' },
+      });
+
       logger.info(`Updated workflow: ${config.name}`, { workflowId });
     } catch (error) {
-      await this.runLogger.updateRunError(runId, error instanceof Error ? error : new Error(String(error)));
+      logger.error(`Failed to update workflow: ${workflowId}`, { error: error instanceof Error ? error.message : 'Unknown error' });
       throw error;
     }
   }
 
   async deleteWorkflow(workflowId: string): Promise<void> {
-    const runId = await this.runLogger.logApiRequest({
-      workflowId,
-      status: 'running',
-      requestData: { action: 'deleteWorkflow', workflowId },
-      metadata: { operation: 'deleteWorkflow' },
-    });
-
     try {
       const workflow = await this.workflowRepo.findById(workflowId);
       if (!workflow) {
         throw new ArbiterError(`Workflow not found: ${workflowId}`, 'WORKFLOW_NOT_FOUND');
       }
+
+      // Log the deletion before actually deleting (while workflow still exists)
+      await this.runLogger.logApiRequest({
+        workflowId,
+        status: 'completed',
+        requestData: { action: 'deleteWorkflow', workflowId },
+        metadata: { operation: 'deleteWorkflow' },
+      });
 
       // Unregister from event system
       await this.eventSystem.unregisterWorkflow(workflowId);
@@ -224,10 +226,9 @@ export class ArbiterServiceDB {
       // Remove workflow from database (this will cascade delete runs)
       await this.workflowRepo.delete(workflowId);
 
-      await this.runLogger.updateRunStatus(runId, 'completed');
       logger.info(`Deleted workflow: ${workflow.name}`, { workflowId });
     } catch (error) {
-      await this.runLogger.updateRunError(runId, error instanceof Error ? error : new Error(String(error)));
+      logger.error(`Failed to delete workflow: ${workflowId}`, { error: error instanceof Error ? error.message : 'Unknown error' });
       throw error;
     }
   }
@@ -247,7 +248,34 @@ export class ArbiterServiceDB {
       metadata: { workflowId },
     };
 
-    return await this.workflowEngine.executeWorkflow(workflow, event);
+    // Log the workflow execution start
+    const runId = await this.runLogger.logWorkflowExecution({
+      workflowId: workflow.id,
+      executionId: event.id,
+      status: 'running',
+      requestData: event.data,
+      userPrompt: workflow.userPrompt,
+      metadata: {
+        eventType: event.type,
+        eventSource: event.source,
+        eventTimestamp: event.timestamp,
+      },
+    });
+
+    try {
+      const execution = await this.workflowEngine.executeWorkflow(workflow, event);
+      
+      // Log the workflow execution completion
+      await this.runLogger.updateRunStatus(runId, execution.status === 'completed' ? 'completed' : 'failed', {
+        execution,
+      });
+
+      return execution;
+    } catch (error) {
+      // Log the workflow execution error
+      await this.runLogger.updateRunError(runId, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   // Agent management with persistence
@@ -306,21 +334,53 @@ export class ArbiterServiceDB {
   }
 
   async executeAgent(agentId: string, input: any, userPrompt?: string): Promise<any> {
-    const runId = await this.runLogger.logAgentExecution({
-      workflowId: 'direct-execution',
-      agentId,
-      status: 'running',
-      requestData: input,
-      userPrompt,
-      metadata: { executionType: 'direct' },
-    });
-
     try {
+      // First create a temporary workflow for direct agent execution if it doesn't exist
+      const directWorkflowId = 'direct-execution';
+      const existingWorkflow = await this.workflowRepo.findById(directWorkflowId);
+      
+      if (!existingWorkflow) {
+        // Create a minimal workflow for direct agent execution
+        const directWorkflow: WorkflowConfig = {
+          id: directWorkflowId,
+          name: 'Direct Agent Execution',
+          description: 'Temporary workflow for direct agent execution',
+          version: '1.0.0',
+          trigger: {
+            type: 'manual',
+            config: {}
+          },
+          rootAgent: {
+            id: agentId,
+            name: 'Direct Execution Agent',
+            description: 'Agent for direct execution',
+            model: 'granite-3.3',
+            systemPrompt: 'Execute tasks directly',
+            availableTools: [],
+            level: 1
+          },
+          levels: [],
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        
+        await this.workflowRepo.create(directWorkflow);
+      }
+
+      const runId = await this.runLogger.logAgentExecution({
+        workflowId: directWorkflowId,
+        agentId,
+        status: 'running',
+        requestData: input,
+        userPrompt,
+        metadata: { executionType: 'direct' },
+      });
+
       const result = await this.agentRuntime.executeAgent(agentId, input, userPrompt);
       await this.runLogger.updateRunStatus(runId, 'completed', result);
       return result;
     } catch (error) {
-      await this.runLogger.updateRunError(runId, error instanceof Error ? error : new Error(String(error)));
+      logger.error(`Failed to execute agent: ${agentId}`, { error: error instanceof Error ? error.message : 'Unknown error' });
       throw error;
     }
   }
