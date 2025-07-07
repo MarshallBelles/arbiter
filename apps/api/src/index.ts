@@ -4,11 +4,12 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { createLogger } from '@arbiter/core';
-import { ArbiterService } from './services/arbiter-service.js';
+import { ArbiterServiceDB } from './services/arbiter-service-db.js';
 import { workflowRoutes } from './routes/workflows.js';
 import { agentRoutes } from './routes/agents.js';
 import { eventRoutes } from './routes/events.js';
 import { healthRoutes } from './routes/health.js';
+import { runRoutes } from './routes/runs.js';
 import { errorHandler } from './middleware/error-handler.js';
 
 const logger = createLogger('ArbiterAPI');
@@ -16,8 +17,8 @@ const logger = createLogger('ArbiterAPI');
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Initialize Arbiter service
-const arbiterService = new ArbiterService();
+// Initialize Arbiter service with database
+const arbiterService = new ArbiterServiceDB();
 
 // Middleware
 app.use(helmet());
@@ -54,6 +55,7 @@ app.use('/api/health', healthRoutes);
 app.use('/api/workflows', workflowRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/events', eventRoutes);
+app.use('/api/runs', runRoutes);
 
 // Error handling
 app.use(errorHandler);

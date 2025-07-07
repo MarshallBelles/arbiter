@@ -19,6 +19,7 @@ export default {
     '^@arbiter/workflow-engine$': '<rootDir>/../../packages/workflow-engine/src',
     '^@arbiter/agent-runtime$': '<rootDir>/../../packages/agent-runtime/src',
     '^@arbiter/event-system$': '<rootDir>/../../packages/event-system/src',
+    '^@arbiter/database$': '<rootDir>/../../packages/database/src',
   },
   extensionsToTreatAsEsm: ['.ts'],
   transformIgnorePatterns: [

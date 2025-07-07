@@ -7,6 +7,7 @@ import { WorkflowDesigner } from './pages/WorkflowDesigner';
 import { Agents } from './pages/Agents';
 import { Events } from './pages/Events';
 import { Settings } from './pages/Settings';
+import RunViewer from './components/RunViewer';
 import { ToastProvider } from './hooks/useToast';
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
           <Route path="/workflows/new" element={<WorkflowDesigner />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/events" element={<Events />} />
+          <Route path="/runs" element={<RunViewer />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
       </Layout>

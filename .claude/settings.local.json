@@ -24,7 +24,11 @@
       "Bash(git rm:*)",
       "Bash(git add:*)",
       "Bash(git rebase:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm exec:*)",
+      "Bash(rm:*)",
+      "Bash(pnpm --filter @arbiter/api test)"
     ],
     "deny": []
   }

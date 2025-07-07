@@ -1,5 +1,4 @@
 import sqlite3 from 'sqlite3';
-import { promisify } from 'util';
 import { createLogger } from '@arbiter/core';
 import { DatabaseConfig, RunRecord, WorkflowRecord, AgentRecord } from './types';
 

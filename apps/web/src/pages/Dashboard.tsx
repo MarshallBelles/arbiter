@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { createLogger } from '@arbiter/core';
+import RunAnalytics from '../components/RunAnalytics';
 
 const logger = createLogger('DashboardPage');
 
@@ -264,6 +265,12 @@ export function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Run Analytics */}
+      <div>
+        <h2 className="text-xl font-semibold text-gray-900 mb-4">Run Analytics & Debugging</h2>
+        <RunAnalytics />
+      </div>
     </div>
   );
 }

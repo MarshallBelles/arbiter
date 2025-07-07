@@ -8,7 +8,8 @@ import {
   Settings, 
   Menu,
   Bell,
-  Search
+  Search,
+  Activity
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -23,6 +24,7 @@ export function Layout({ children }: LayoutProps) {
     { name: 'Workflows', href: '/workflows', icon: Workflow },
     { name: 'Agents', href: '/agents', icon: Bot },
     { name: 'Events', href: '/events', icon: Calendar },
+    { name: 'Runs', href: '/runs', icon: Activity },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
