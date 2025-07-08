@@ -20,7 +20,8 @@
       "Bash(npm run test:e2e:*)",
       "Bash(npx playwright:*)",
       "Bash(npm run lint)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(curl:*)"
     ],
     "deny": []
   },

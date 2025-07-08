@@ -122,7 +122,7 @@ export default function EventsPage() {
           .filter((e: ArbiterEvent) => e.processingTime)
           .map((e: ArbiterEvent) => e.processingTime || 0);
         const avgProcessingTime = processingTimes.length > 0 
-          ? processingTimes.reduce((sum, time) => sum + time, 0) / processingTimes.length 
+          ? processingTimes.reduce((sum: number, time: number) => sum + time, 0) / processingTimes.length 
           : 0;
         
         setStats({ total, pending, processing, completed, failed, avgProcessingTime });

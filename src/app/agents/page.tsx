@@ -59,7 +59,7 @@ export default function Agents() {
       toast({ title: 'Agent deleted successfully' });
       setAgents(agents.filter((agent) => agent.id !== id));
     } catch (error) {
-      toast({ title: 'Error deleting agent', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error deleting agent', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     }
   };
 

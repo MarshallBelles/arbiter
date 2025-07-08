@@ -54,7 +54,7 @@ export default function WorkflowDetailPage() {
   const router = useRouter();
   const params = useParams();
   const { toast } = useToast();
-  const id = params.id as string;
+  const id = params?.id as string;
 
   const [workflow, setWorkflow] = useState<WorkflowConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -94,7 +94,7 @@ export default function WorkflowDetailPage() {
       setName(data.name);
       setDescription(data.description);
     } catch (error) {
-      toast({ title: 'Error fetching workflow', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error fetching workflow', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsLoading(false);
     }
@@ -110,12 +110,12 @@ export default function WorkflowDetailPage() {
         
         // Calculate stats
         const total = runs.length;
-        const completed = runs.filter(r => r.status === 'completed').length;
-        const failed = runs.filter(r => r.status === 'failed').length;
+        const completed = runs.filter((r: any) => r.status === 'completed').length;
+        const failed = runs.filter((r: any) => r.status === 'failed').length;
         const avgDuration = runs
-          .filter(r => r.durationMs)
-          .reduce((sum, r) => sum + (r.durationMs || 0), 0) / 
-          Math.max(1, runs.filter(r => r.durationMs).length);
+          .filter((r: any) => r.durationMs)
+          .reduce((sum: number, r: any) => sum + (r.durationMs || 0), 0) / 
+          Math.max(1, runs.filter((r: any) => r.durationMs).length);
         
         setRunStats({ total, completed, failed, avgDuration });
       }
@@ -143,7 +143,7 @@ export default function WorkflowDetailPage() {
       setIsEditing(false);
       toast({ title: 'Workflow updated successfully' });
     } catch (error) {
-      toast({ title: 'Error updating workflow', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error updating workflow', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -179,7 +179,7 @@ export default function WorkflowDetailPage() {
       }, 1000);
       
     } catch (error) {
-      toast({ title: 'Execution failed', description: error.message, variant: 'destructive' });
+      toast({ title: 'Execution failed', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsExecuting(false);
     }
@@ -198,7 +198,7 @@ export default function WorkflowDetailPage() {
       toast({ title: 'Workflow deleted successfully' });
       router.push('/workflows');
     } catch (error) {
-      toast({ title: 'Error deleting workflow', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error deleting workflow', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     }
   };
 
@@ -329,11 +329,11 @@ export default function WorkflowDetailPage() {
                   </div>
                   <div>
                     <span className="text-sm font-medium text-gray-500">Agents</span>
-                    <p className="text-gray-900">{workflow.agents?.length || 0} agents configured</p>
+                    <p className="text-gray-900">{workflow.levels?.reduce((acc, level) => acc + level.agents.length, 0) + 1 || 1} agents configured</p>
                   </div>
                   <div>
                     <span className="text-sm font-medium text-gray-500">Created</span>
-                    <p className="text-gray-900">{workflow.createdAt ? formatTimestamp(workflow.createdAt) : 'Unknown'}</p>
+                    <p className="text-gray-900">{workflow.createdAt ? formatTimestamp(workflow.createdAt.toString()) : 'Unknown'}</p>
                   </div>
                 </div>
               )}

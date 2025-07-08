@@ -1,19 +1,6 @@
-
 import { NextApiRequest, NextApiResponse } from 'next';
-import { ArbiterServiceDB } from '@/lib/services/arbiter-service-db';
 import { sanitizeAgentConfig } from '@/lib/utils/sanitization';
-
-let arbiterService: ArbiterServiceDB | null = null;
-
-async function getArbiterService(): Promise<ArbiterServiceDB> {
-  if (!arbiterService) {
-    arbiterService = new ArbiterServiceDB(
-      process.env.DATABASE_PATH || './data/arbiter.db'
-    );
-    await arbiterService.initialize();
-  }
-  return arbiterService;
-}
+import { getArbiterService } from '@/lib/services/service-manager';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const service = await getArbiterService();
@@ -43,6 +30,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } catch (error) {
     console.error(`Agent API Error for ID: ${id}`, error);
-    res.status(500).json({ error: 'Internal server error', message: error.message });
+    res.status(500).json({ error: 'Internal server error', message: error instanceof Error ? error.message : 'Unknown error' });
   }
 }

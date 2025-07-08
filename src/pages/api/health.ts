@@ -1,36 +1,29 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-import { ArbiterServiceDB } from '@/lib/services/arbiter-service-db';
-
-// Initialize Arbiter service (singleton)
-let arbiterService: ArbiterServiceDB | null = null;
-
-function getArbiterService(): ArbiterServiceDB {
-  if (!arbiterService) {
-    arbiterService = new ArbiterServiceDB(
-      process.env.DATABASE_PATH || './data/arbiter.db'
-    );
-  }
-  return arbiterService;
-}
+import { getArbiterService, getServiceStatus, validateServiceHealth } from '@/lib/services/service-manager';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'GET') {
     try {
-      const service = getArbiterService();
-      await service.initialize();
-      const status = await service.getStatus();
+      // Initialize service and get status
+      const service = await getArbiterService();
+      const serviceStatus = await service.getStatus();
+      const serviceManagerStatus = getServiceStatus();
       
       res.status(200).json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         version: process.env.npm_package_version || '1.0.0',
-        ...status,
+        serviceManager: serviceManagerStatus,
+        arbiterService: serviceStatus,
       });
     } catch (error) {
+      const serviceManagerStatus = getServiceStatus();
+      
       res.status(500).json({
         status: 'error',
         message: error instanceof Error ? error.message : 'Unknown error',
         timestamp: new Date().toISOString(),
+        serviceManager: serviceManagerStatus,
       });
     }
   } else {

@@ -64,7 +64,7 @@ export default function Workflows() {
       toast({ title: 'Workflow deleted successfully' });
       setWorkflows(workflows.filter((workflow) => workflow.id !== id));
     } catch (error) {
-      toast({ title: 'Error deleting workflow', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error deleting workflow', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     }
   };
 

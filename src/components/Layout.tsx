@@ -93,7 +93,7 @@ export function Layout({ children }: LayoutProps) {
       )}
 
       {/* Desktop Sidebar */}
-      <div className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:w-64 lg:bg-white lg:shadow-lg">
+      <div className="hidden lg:block fixed inset-y-0 left-0 w-64 bg-white shadow-lg z-30">
         <div className="flex h-16 items-center px-6 border-b">
           <div className="flex items-center space-x-2">
             <div className="w-8 h-8 bg-arbiter-600 rounded-lg flex items-center justify-center">

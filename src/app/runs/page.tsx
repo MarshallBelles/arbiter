@@ -134,7 +134,7 @@ export default function RunsPage() {
         .filter((r: RunRecord) => r.durationMs)
         .map((r: RunRecord) => r.durationMs || 0);
       const avgDuration = durations.length > 0 
-        ? durations.reduce((sum, dur) => sum + dur, 0) / durations.length 
+        ? durations.reduce((sum: number, dur: number) => sum + dur, 0) / durations.length 
         : 0;
       
       const totalTokens = runsData

@@ -1,21 +1,9 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-import { ArbiterServiceDB } from '@/lib/services/arbiter-service-db';
-
-// Initialize Arbiter service (singleton)
-let arbiterService: ArbiterServiceDB | null = null;
-
-function getArbiterService(): ArbiterServiceDB {
-  if (!arbiterService) {
-    arbiterService = new ArbiterServiceDB(
-      process.env.DATABASE_PATH || './data/arbiter.db'
-    );
-  }
-  return arbiterService;
-}
+import { getArbiterService } from '@/lib/services/service-manager';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const { id } = req.query;
-  const service = getArbiterService();
+  const service = await getArbiterService();
 
   if (typeof id !== 'string') {
     return res.status(400).json({ error: 'Invalid workflow ID' });

@@ -147,7 +147,7 @@ export default function SettingsPage() {
         throw new Error('Failed to save settings');
       }
     } catch (error) {
-      toast({ title: 'Error saving settings', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error saving settings', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -174,7 +174,7 @@ export default function SettingsPage() {
         throw new Error(error.message || 'LLM connection failed');
       }
     } catch (error) {
-      toast({ title: 'LLM connection failed', description: error.message, variant: 'destructive' });
+      toast({ title: 'LLM connection failed', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
       setHealth(prev => ({ ...prev, llmConnected: false }));
     } finally {
       setIsTestingLLM(false);

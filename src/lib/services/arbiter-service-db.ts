@@ -484,8 +484,16 @@ export class ArbiterServiceDB {
     logger.info('Database maintenance completed');
   }
 
-  // Public getter for run repository (needed by API endpoints)
+  // Public getters for repositories (needed by API endpoints)
   get runRepository(): RunRepository {
     return this.runRepo;
+  }
+
+  get agentRepository(): AgentRepository {
+    return this.agentRepo;
+  }
+
+  get workflowRepository(): WorkflowRepository {
+    return this.workflowRepo;
   }
 }

@@ -1,21 +1,8 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import Joi from 'joi';
-import { ArbiterServiceDB } from '@/lib/services/arbiter-service-db';
 import { AgentConfig } from '@/lib/core';
 import { sanitizeAgentConfig } from '@/lib/utils/sanitization';
-
-// Initialize Arbiter service (singleton)
-let arbiterService: ArbiterServiceDB | null = null;
-
-async function getArbiterService(): Promise<ArbiterServiceDB> {
-  if (!arbiterService) {
-    arbiterService = new ArbiterServiceDB(
-      process.env.DATABASE_PATH || './data/arbiter.db'
-    );
-    await arbiterService.initialize();
-  }
-  return arbiterService;
-}
+import { getArbiterService } from '@/lib/services/service-manager';
 
 // Validation schemas
 const agentSchema = Joi.object({

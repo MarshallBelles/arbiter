@@ -1,20 +1,8 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import Joi from 'joi';
-import { ArbiterServiceDB } from '@/lib/services/arbiter-service-db';
 import { WorkflowConfig } from '@/lib/core';
 import { sanitizeWorkflowConfig } from '@/lib/utils/sanitization';
-
-// Initialize Arbiter service (singleton)
-let arbiterService: ArbiterServiceDB | null = null;
-
-function getArbiterService(): ArbiterServiceDB {
-  if (!arbiterService) {
-    arbiterService = new ArbiterServiceDB(
-      process.env.DATABASE_PATH || './data/arbiter.db'
-    );
-  }
-  return arbiterService;
-}
+import { getArbiterService } from '@/lib/services/service-manager';
 
 // Validation schemas
 const workflowSchema = Joi.object({
@@ -53,8 +41,7 @@ const workflowSchema = Joi.object({
 });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const service = getArbiterService();
-  await service.initialize();
+  const service = await getArbiterService();
 
   try {
     if (req.method === 'GET') {
@@ -103,6 +90,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           level: 0 
         },
         levels: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
       };
 
       const sanitizedConfig = sanitizeWorkflowConfig(newWorkflow);

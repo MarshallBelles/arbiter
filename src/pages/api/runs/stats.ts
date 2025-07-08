@@ -1,18 +1,5 @@
-
 import { NextApiRequest, NextApiResponse } from 'next';
-import { ArbiterServiceDB } from '@/lib/services/arbiter-service-db';
-
-let arbiterService: ArbiterServiceDB | null = null;
-
-async function getArbiterService(): Promise<ArbiterServiceDB> {
-  if (!arbiterService) {
-    arbiterService = new ArbiterServiceDB(
-      process.env.DATABASE_PATH || './data/arbiter.db'
-    );
-    await arbiterService.initialize();
-  }
-  return arbiterService;
-}
+import { getArbiterService } from '@/lib/services/service-manager';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'GET') {

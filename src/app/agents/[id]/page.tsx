@@ -112,7 +112,7 @@ export default function AgentDetailPage() {
       setSystemPrompt(data.systemPrompt || '');
       setLevel(data.level || 0);
     } catch (error) {
-      toast({ title: 'Error fetching agent', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error fetching agent', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsLoading(false);
     }
@@ -173,7 +173,7 @@ export default function AgentDetailPage() {
       setIsEditing(false);
       toast({ title: 'Agent updated successfully' });
     } catch (error) {
-      toast({ title: 'Error updating agent', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error updating agent', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -225,11 +225,11 @@ export default function AgentDetailPage() {
         response: '',
         latencyMs: 0,
         success: false,
-        error: error.message
+        error: error instanceof Error ? error.message : 'Unknown error'
       };
       
       setTestResults([failedTest, ...testResults.slice(0, 4)]);
-      toast({ title: 'Test failed', description: error.message, variant: 'destructive' });
+      toast({ title: 'Test failed', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setIsTesting(false);
     }
@@ -248,7 +248,7 @@ export default function AgentDetailPage() {
       toast({ title: 'Agent deleted successfully' });
       router.push('/agents');
     } catch (error) {
-      toast({ title: 'Error deleting agent', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error deleting agent', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     }
   };
 
