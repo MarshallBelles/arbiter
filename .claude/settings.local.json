@@ -1,49 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo check:*)",
-      "Bash(cargo build:*)",
-      "Bash(chmod:*)",
-      "Bash(rg:*)",
-      "Bash(cargo test:*)",
-      "Bash(find:*)",
-      "Bash(ollama create:*)",
-      "Bash(grep:*)",
-      "Bash(git add:*)",
-      "Bash(cargo run:*)",
-      "Bash(awk:*)",
-      "Bash(ls:*)",
-      "Bash(mkdir:*)",
-      "Bash(pnpm install:*)",
-      "Bash(npm install:*)",
-      "Bash(pnpm test:*)",
-      "Bash(pnpm clean:*)",
-      "Bash(npm test)",
-      "Bash(npm test:*)",
-      "Bash(npx jest:*)",
-      "Bash(git rm:*)",
-      "Bash(git add:*)",
-      "Bash(git rebase:*)",
-      "Bash(grep:*)",
-      "Bash(pnpm build:*)",
-      "Bash(pnpm exec:*)",
-      "Bash(rm:*)",
-      "Bash(pnpm --filter @arbiter/api test)",
-      "Bash(pnpm add:*)",
-      "Bash(npx vitest run:*)",
-      "Bash(pnpm dev:*)",
-      "Bash(curl:*)",
-      "Bash(sed:*)",
-      "Bash(npx tsc:*)",
-      "mcp__playwright__browser_navigate",
-      "Bash(cat:*)",
-      "Bash(pkill:*)",
-      "Bash(true)"
+      "Bash(cp:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run build:*)",
+      "Bash(touch:*)",
+      "Bash(echo:*)"
     ],
     "deny": []
   },
-  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "playwright"
-  ]
+  ],
+  "enableAllProjectMcpServers": true
 }

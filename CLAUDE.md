@@ -4,75 +4,67 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Essential Commands
 
-### Development Workflow
+### Development Workflow (Next.js)
 ```bash
-# Install dependencies (from root)
-pnpm install
+# Navigate to the new Next.js application
+cd new
 
-# Start all development servers
-pnpm dev
+# Install dependencies
+npm install
 
-# Start individual services
-cd apps/api && pnpm dev        # API server on port 3001
-cd apps/web && pnpm dev        # React frontend on port 3000
+# Start development server
+npm run dev                    # Frontend + API on port 3000
 
-# Build everything
-pnpm build
+# Build application
+npm run build
+
+# Start production server
+npm start
 
 # Run tests
-pnpm test                      # All packages (Jest + Vitest + Playwright)
-pnpm test:e2e                  # End-to-end tests only
-pnpm --filter @arbiter/api test  # API tests (Jest)
-pnpm --filter @arbiter/web test  # Frontend tests (Vitest)
-
-# Specific test patterns
-cd apps/api && npm test -- --testPathPattern="run-logger.test.ts"  # Single test file
-cd apps/api && npm test -- --testNamePattern="chaos engineering"   # Test by name
-cd apps/web && npm test -- --testPathPattern="RunViewer.test.tsx"  # React component test
-
-# Test categories
-cd apps/api && npm test -- --testPathPattern="health.test.ts"              # Health endpoint
-cd apps/api && npm test -- --testPathPattern="network-failures.test.ts"   # Network resilience
-cd apps/api && npm test -- --testPathPattern="chaos-engineering.test.ts"  # Chaos tests
-cd apps/e2e && npm test -- --headed                                        # E2E with browser UI
+npm run test                   # Jest tests
+npm run test:e2e              # Playwright E2E tests
 
 # Linting and formatting
-pnpm lint
-pnpm format
+npm run lint
 ```
 
-### Database & Testing
-```bash
-# Run tests that use the database (creates temp SQLite files)
-cd apps/api && npm test
+### Old Architecture (Archived)
+The previous monorepo architecture has been archived in the `old/` directory for reference.
 
-# Clean build artifacts
-pnpm clean
-```
-
-## Architecture Overview
+## New Architecture Overview (Next.js)
 
 ### Core Concepts
 Arbiter is an **AI Agent Orchestration Platform** that uses a unique **left-to-right mesh network** workflow model. Think "Jenkins but for AI agents."
 
 **Key Principle**: Events trigger workflows → Root agent processes → Next-level agents appear as tools → Parallel execution → Synchronous completion.
 
-### Package Architecture
+### New Simplified Architecture
 ```
-packages/
-├── core/              # Shared TypeScript types and utilities
-├── workflow-engine/   # Mesh network workflow execution
-├── agent-runtime/     # Agent execution with Granite 3.3 optimizations  
-├── event-system/      # Event triggers (webhook, cron, file-watch, manual)
-├── database/          # SQLite persistence layer with repositories
-```
-
-### Application Layer
-```
-apps/
-├── api/               # Express REST API server
-├── web/               # React frontend with dashboard
-├── e2e/               # Playwright end-to-end tests
+new/
+├── src/
+│   ├── app/                   # Next.js App Router pages
+│   │   ├── dashboard/         # Main dashboard
+│   │   ├── workflows/         # Workflow management
+│   │   ├── agents/            # Agent management
+│   │   ├── events/            # Event monitoring
+│   │   └── settings/          # System settings
+│   ├── pages/api/             # Next.js API routes
+│   │   ├── health/            # Health endpoints
+│   │   ├── workflows/         # Workflow API
+│   │   └── agents/            # Agent API
+│   ├── lib/                   # Core business logic
+│   │   ├── core/              # Types and utilities
+│   │   ├── database/          # SQLite persistence
+│   │   ├── agents/            # Agent runtime
+│   │   ├── workflow/          # Workflow engine
+│   │   ├── events/            # Event system
+│   │   ├── services/          # API services
+│   │   └── utils/             # Shared utilities
+│   ├── components/            # React components
+│   └── hooks/                 # React hooks
+├── tests/                     # All tests consolidated
+└── public/                    # Static assets
 ```
 
 ### Database Layer
@@ -94,145 +86,116 @@ apps/
 - **JSON-First Responses**: Structured format for reliable agent communication
 - **Tool Registration System**: Dynamic agent-to-agent communication
 - **Context Management**: Multi-turn conversation handling
+- **llama.cpp Integration**: Local inference server at http://localhost:8080
 
 ### API Design Patterns
-- RESTful endpoints for workflows, agents, events, and runs
+- Next.js API routes with proper HTTP methods
 - Validation using Joi schemas
-- Error handling middleware with proper HTTP status codes
-- Rate limiting and security headers via Helmet
-- CORS configuration for frontend integration
+- Error handling with standardized responses
+- SQLite database operations
+- Environment-based configuration
 
 ## Key Files and Their Roles
 
 ### Core Type Definitions
-- `packages/core/src/types/workflow.ts` - WorkflowConfig, EventTrigger, WorkflowExecution
-- `packages/core/src/types/agent.ts` - AgentConfig, AgentTool, AgentResponse
-- `packages/core/src/types/event.ts` - ArbiterEvent, EventHandler definitions
+- `src/lib/core/types/workflow.ts` - WorkflowConfig, EventTrigger, WorkflowExecution
+- `src/lib/core/types/agent.ts` - AgentConfig, AgentTool, AgentResponse
+- `src/lib/core/types/event.ts` - ArbiterEvent, EventHandler definitions
 
 ### Main Service Classes
-- `apps/api/src/services/arbiter-service-db.ts` - Main orchestration service with database persistence
-- `packages/workflow-engine/src/workflow-engine.ts` - Mesh network workflow execution logic
-- `packages/agent-runtime/src/granite-agent.ts` - Granite 3.3 optimized agent execution
-- `packages/database/src/run-logger.ts` - Comprehensive execution logging and tracking
+- `src/lib/services/arbiter-service-db.ts` - Main orchestration service with database persistence
+- `src/lib/workflow/workflow-engine.ts` - Mesh network workflow execution logic
+- `src/lib/agents/granite-agent.ts` - Granite 3.3 optimized agent execution
+- `src/lib/database/run-logger.ts` - Comprehensive execution logging and tracking
 
 ### Database Integration
-- `packages/database/src/database.ts` - SQLite operations with proper schema
-- `packages/database/src/repositories/` - Repository pattern for data access
+- `src/lib/database/database.ts` - SQLite operations with proper schema
+- `src/lib/database/repositories/` - Repository pattern for data access
 - Foreign key relationships: runs → workflows, runs → agents
+
+### API Endpoints
+- `src/pages/api/health.ts` - System health monitoring
+- `src/pages/api/workflows/` - Workflow CRUD operations
+- `src/pages/api/agents/` - Agent management
+
+### Frontend Pages
+- `src/app/dashboard/page.tsx` - Main dashboard with analytics
+- `src/app/workflows/page.tsx` - Workflow management interface
+- `src/app/workflows/designer/page.tsx` - Workflow creation/editing
+- `src/app/agents/page.tsx` - Agent management interface
 
 ## Development Patterns
 
-### Test Architecture
-Arbiter employs a comprehensive testing strategy designed for **pre-production bug detection** and **system optimization**:
+### Testing Strategy
+The testing strategy has been preserved from the original architecture:
 
-#### **Backend Testing (Jest)**
-- **Unit Tests**: 28+ test files across all packages and API routes
-- **Integration Tests**: Event system → WorkflowEngine → AgentRuntime chains
+- **Unit Tests**: Jest for lib/ modules
+- **Integration Tests**: API endpoint testing
+- **Component Tests**: React Testing Library for UI components
+- **End-to-End Tests**: Playwright for full user workflows
 - **Database Tests**: Temporary SQLite files for isolation
-- **Health Endpoint Tests**: Complete API health monitoring coverage
-- **Edge Case Tests**: 30+ comprehensive scenarios for workflow routes
-- **Network Failure Tests**: External dependency handling and retry mechanisms
-- **Chaos Engineering Tests**: Random failures, resource exhaustion, system recovery
-
-#### **Frontend Testing (Vitest + React Testing Library)**
-- **Component Tests**: RunViewer (25+ tests), RunAnalytics (20+ tests)
-- **User Interaction Tests**: Search, filtering, modal interactions, export functionality
-- **Performance Tests**: Large dataset handling, rendering efficiency
-- **Error Handling Tests**: API failures, loading states, empty states
-- **Data Formatting Tests**: Number formatting, date handling, validation
-
-#### **End-to-End Testing (Playwright)**
-- **User Workflow Tests**: Complete workflows from creation to execution
-- **Cross-Browser Tests**: Chrome, Firefox, Safari, Mobile Chrome/Safari
-- **Error Scenario Tests**: 12 edge cases and failure conditions
-- **Performance Tests**: Concurrent operations, large workflows
-- **UI Navigation Tests**: Responsive design, accessibility
 
 ### Error Handling
 - Custom error classes: `WorkflowError`, `AgentError`, `ArbiterError`
 - Proper error propagation through the execution chain
-- Database transaction handling with foreign key constraints
+- Next.js API error responses with proper HTTP status codes
 
 ### Logging System
 - Structured logging with `createLogger` from core package
 - Different log levels: info, warn, error, debug
 - Context-aware logging with execution IDs and agent IDs
 
-### Monorepo Management
-- **Turborepo** for build orchestration and caching
-- **pnpm workspaces** for dependency management
-- TypeScript compilation artifacts ignored in source directories
-- Shared dependencies through `workspace:*` protocol
+### Environment Configuration
+- `DATABASE_PATH`: SQLite database file location (default: ./data/arbiter.db)
+- Model configuration for llama.cpp integration
+- API endpoint configurations
 
-## Common Issues and Solutions
+## llama.cpp Integration
 
-### Database Foreign Key Constraints
-When creating test data or new records, always ensure:
-1. Workflows exist before creating runs that reference them
-2. Agents exist before creating runs that reference them  
-3. Use proper Date objects, not ISO strings for timestamps
+### Setup
+The platform is configured to work with llama.cpp running locally:
 
-### TypeScript Build Issues
-- Run `pnpm build` from root to ensure proper dependency compilation
-- Check for circular dependencies between packages
-- Use absolute imports with package names (e.g., `@arbiter/core`)
+```bash
+# Start llama.cpp server (separate terminal)
+./llama-server --model /path/to/granite-3.3-2b-instruct-q4_k_m.gguf --port 8080
 
-### Test Isolation
-- Each test creates unique temporary SQLite databases
-- Use `beforeEach`/`afterEach` for proper cleanup
-- Avoid sharing database instances between test suites
-
-## Testing Strategy for Pre-Production
-
-### Bug Detection Focus
-The testing suite prioritizes **finding bugs and inefficiencies** before production deployment:
-
-#### **Edge Case Discovery**
-- **Large Payload Tests**: 10MB+ workflow configurations, 1000+ agents, 50+ levels deep
-- **Concurrent Operations**: Race conditions, database conflicts, simultaneous updates
-- **Data Validation**: SQL injection prevention, Unicode handling, malformed JSON
-- **Resource Limits**: Memory exhaustion, CPU saturation, file descriptor limits
-
-#### **System Resilience Testing**
-- **Network Failures**: API timeouts, connection drops, SSL certificate errors
-- **External Dependencies**: Retry mechanisms, circuit breakers, graceful degradation
-- **Chaos Engineering**: Random component failures, cascading outages, recovery scenarios
-- **Performance Under Load**: Response times, throughput, memory usage patterns
-
-#### **User Experience Validation**
-- **Frontend Robustness**: Large datasets, search performance, modal interactions
-- **Error Handling**: API failures, loading states, empty data scenarios
-- **Cross-Browser Compatibility**: Desktop and mobile browsers
-- **Accessibility**: Screen readers, keyboard navigation, color contrast
-
-### Test File Organization
-```
-apps/api/src/__tests__/
-├── routes/
-│   ├── health.test.ts           # API health monitoring (19 tests)
-│   └── workflows.test.ts        # Enhanced workflow routes (70+ tests)
-├── network/
-│   └── network-failures.test.ts # External dependency failures (21 tests)
-├── chaos/
-│   └── chaos-engineering.test.ts # System resilience (17 tests)
-├── integration/                 # Service integration tests
-├── security/                    # Security validation tests
-└── stress/                      # Performance and load tests
-
-apps/web/src/components/__tests__/
-├── RunViewer.test.tsx           # Data table component (25+ tests)
-└── RunAnalytics.test.tsx        # Analytics dashboard (20+ tests)
-
-apps/e2e/tests/
-├── workflow-lifecycle.spec.ts   # Complete workflow management
-├── agent-management.spec.ts     # Agent CRUD operations
-├── run-analytics.spec.ts        # Execution monitoring
-└── error-scenarios.spec.ts      # Error handling and edge cases
+# The platform expects the server at:
+# http://localhost:8080
 ```
 
-### Quality Assurance Principles
-1. **Fail Fast**: Tests detect issues early in development cycle
-2. **Realistic Scenarios**: Tests mirror actual production conditions
-3. **Comprehensive Coverage**: Unit → Integration → E2E → Chaos testing
-4. **Performance Aware**: Tests identify bottlenecks and optimization opportunities
-5. **Security First**: Input validation, injection prevention, data integrity checks
+### Model Configuration
+- **Model**: Granite 3.3 2B Instruct (Q4_K_M quantization)
+- **Context**: 128K tokens
+- **Temperature**: 0.1 (deterministic)
+- **Max Tokens**: 800
+- **Format**: JSON-first responses
+
+### Testing llama.cpp Integration
+```bash
+# Test agent execution with local model
+node test-llama-integration.js
+```
+
+## Simplified Development Benefits
+
+✅ **Single Package**: No more monorepo complexity  
+✅ **Unified Development**: One `npm run dev` command  
+✅ **Simplified Imports**: Direct module imports with `@/lib/`  
+✅ **Better DX**: Hot reload for full-stack development  
+✅ **Production Ready**: Next.js optimizations and deployment  
+✅ **Same Functionality**: All features preserved from original architecture
+
+## Migration Notes
+
+The original complex monorepo architecture with 8 packages has been successfully consolidated into a single Next.js application. All functionality has been preserved:
+
+- All TypeScript types and interfaces maintained
+- Complete database operations and repositories
+- Full agent runtime with llama.cpp integration
+- Complete workflow engine with mesh network execution
+- All event triggers (webhook, cron, manual, file-watch)
+- Complete React frontend with all components
+- Comprehensive API with all endpoints
+- Full test coverage architecture (to be migrated)
+
+The new architecture is significantly simpler to develop with while maintaining all the powerful features of the original Arbiter platform.
