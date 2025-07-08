@@ -483,4 +483,9 @@ export class ArbiterServiceDB {
     // Could implement VACUUM, ANALYZE, etc.
     logger.info('Database maintenance completed');
   }
+
+  // Public getter for run repository (needed by API endpoints)
+  get runRepository(): RunRepository {
+    return this.runRepo;
+  }
 }

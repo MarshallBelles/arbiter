@@ -17,7 +17,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === 'GET') {
     try {
       const service = getArbiterService();
-      const status = service.getStatus();
+      await service.initialize();
+      const status = await service.getStatus();
       
       res.status(200).json({
         status: 'healthy',

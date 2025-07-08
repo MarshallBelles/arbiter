@@ -54,6 +54,7 @@ const workflowSchema = Joi.object({
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const service = getArbiterService();
+  await service.initialize();
 
   try {
     if (req.method === 'GET') {
@@ -80,15 +81,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     } else if (req.method === 'POST') {
       // POST /api/workflows - Create new workflow
-      const { error, value } = workflowSchema.validate(req.body);
-      if (error) {
-        return res.status(400).json({
-          error: 'Validation failed',
-          details: error.details.map(d => d.message),
-        });
+      const { name, description } = req.body;
+
+      if (!name || !description) {
+        return res.status(400).json({ error: 'Name and description are required' });
       }
 
-      const sanitizedConfig = sanitizeWorkflowConfig(value as WorkflowConfig);
+      const newWorkflow: WorkflowConfig = {
+        id: `wf-${Date.now()}`,
+        name,
+        description,
+        version: '1.0.0',
+        trigger: { type: 'manual', config: {} },
+        rootAgent: { 
+          id: 'agent-0', 
+          name: 'Start', 
+          description: 'Initial agent', 
+          model: 'default', 
+          systemPrompt: 'You are the starting agent.', 
+          availableTools: [], 
+          level: 0 
+        },
+        levels: [],
+      };
+
+      const sanitizedConfig = sanitizeWorkflowConfig(newWorkflow);
       const workflow = await service.createWorkflow(sanitizedConfig);
       
       res.status(201).json(workflow);

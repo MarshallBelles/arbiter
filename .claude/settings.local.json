@@ -5,12 +5,27 @@
       "Bash(npm run dev:*)",
       "Bash(npm run build:*)",
       "Bash(touch:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(rm:*)",
+      "Bash(npm install)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(timeout 10s npm run dev)",
+      "mcp__playwright__browser_install",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_take_screenshot",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_wait_for",
+      "Bash(mkdir:*)",
+      "Bash(npm run test:e2e:*)",
+      "Bash(npx playwright:*)",
+      "Bash(npm run lint)",
+      "Bash(grep:*)"
     ],
     "deny": []
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "playwright"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

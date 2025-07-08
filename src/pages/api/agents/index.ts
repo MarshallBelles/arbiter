@@ -7,11 +7,12 @@ import { sanitizeAgentConfig } from '@/lib/utils/sanitization';
 // Initialize Arbiter service (singleton)
 let arbiterService: ArbiterServiceDB | null = null;
 
-function getArbiterService(): ArbiterServiceDB {
+async function getArbiterService(): Promise<ArbiterServiceDB> {
   if (!arbiterService) {
     arbiterService = new ArbiterServiceDB(
       process.env.DATABASE_PATH || './data/arbiter.db'
     );
+    await arbiterService.initialize();
   }
   return arbiterService;
 }
@@ -31,7 +32,7 @@ const agentSchema = Joi.object({
 });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const service = getArbiterService();
+  const service = await getArbiterService();
 
   try {
     if (req.method === 'GET') {

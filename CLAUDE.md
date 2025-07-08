@@ -6,9 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Development Workflow (Next.js)
 ```bash
-# Navigate to the new Next.js application
-cd new
-
 # Install dependencies
 npm install
 
@@ -29,9 +26,6 @@ npm run test:e2e              # Playwright E2E tests
 npm run lint
 ```
 
-### Old Architecture (Archived)
-The previous monorepo architecture has been archived in the `old/` directory for reference.
-
 ## New Architecture Overview (Next.js)
 
 ### Core Concepts
@@ -39,9 +33,8 @@ Arbiter is an **AI Agent Orchestration Platform** that uses a unique **left-to-r
 
 **Key Principle**: Events trigger workflows → Root agent processes → Next-level agents appear as tools → Parallel execution → Synchronous completion.
 
-### New Simplified Architecture
+### Simplified Architecture
 ```
-new/
 ├── src/
 │   ├── app/                   # Next.js App Router pages
 │   │   ├── dashboard/         # Main dashboard
@@ -187,7 +180,7 @@ node test-llama-integration.js
 
 ## Migration Notes
 
-The original complex monorepo architecture with 8 packages has been successfully consolidated into a single Next.js application. All functionality has been preserved:
+The complex monorepo architecture with 8 packages has been successfully consolidated into a single Next.js application. All functionality has been preserved:
 
 - All TypeScript types and interfaces maintained
 - Complete database operations and repositories
@@ -196,6 +189,6 @@ The original complex monorepo architecture with 8 packages has been successfully
 - All event triggers (webhook, cron, manual, file-watch)
 - Complete React frontend with all components
 - Comprehensive API with all endpoints
-- Full test coverage architecture (to be migrated)
+- Full test coverage architecture
 
-The new architecture is significantly simpler to develop with while maintaining all the powerful features of the original Arbiter platform.
+The simplified architecture makes development much easier while maintaining all the powerful features of the Arbiter platform.

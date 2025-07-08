@@ -9,6 +9,7 @@ interface ToastContextType {
   showError: (title: string, message?: string, duration?: number) => void;
   showWarning: (title: string, message?: string, duration?: number) => void;
   showInfo: (title: string, message?: string, duration?: number) => void;
+  toast: (options: { title: string; description?: string; variant?: 'default' | 'destructive' }) => void;
 }
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
@@ -57,6 +58,11 @@ export const ToastProvider: React.FC<ToastProviderProps> = ({ children }) => {
     showToast({ type: 'info', title, message, duration });
   };
 
+  const toast = (options: { title: string; description?: string; variant?: 'default' | 'destructive' }) => {
+    const type = options.variant === 'destructive' ? 'error' : 'success';
+    showToast({ type, title: options.title, message: options.description });
+  };
+
   const removeToast = (id: string) => {
     setToasts(prev => prev.filter(toast => toast.id !== id));
   };
@@ -67,6 +73,7 @@ export const ToastProvider: React.FC<ToastProviderProps> = ({ children }) => {
     showError,
     showWarning,
     showInfo,
+    toast,
   };
 
   return (
